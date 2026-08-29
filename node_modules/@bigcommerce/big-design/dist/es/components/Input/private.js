@@ -1,0 +1,1 @@
+export { StyledInput, StyledInputWrapper } from './styled';

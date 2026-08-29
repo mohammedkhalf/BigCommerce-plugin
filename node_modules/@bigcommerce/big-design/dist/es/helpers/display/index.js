@@ -1,0 +1,1 @@
+export { withDisplay } from './display';

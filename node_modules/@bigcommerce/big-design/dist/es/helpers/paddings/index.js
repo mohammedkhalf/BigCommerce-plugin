@@ -1,0 +1,1 @@
+export { excludePaddingProps, withPaddings } from './paddings';
