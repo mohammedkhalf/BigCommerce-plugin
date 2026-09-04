@@ -1,1 +1,0 @@
-export { ListGroupHeader } from './ListGroupHeader';
