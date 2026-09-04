@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Models\StoreUser;
 use App\Services\Auth\AppSessionJwt;
+use App\Support\AppSessionCookie;
 use App\Support\StoreContext;
 use Closure;
 use Illuminate\Auth\AuthenticationException;
@@ -16,7 +17,7 @@ final readonly class ResolveStoreContext
 
     public function handle(Request $request, Closure $next): Response
     {
-        $token = $request->bearerToken();
+        $token = $request->bearerToken() ?? $request->cookie(AppSessionCookie::NAME);
 
         if ($token === null) {
             throw new AuthenticationException('App session bearer token is required.');

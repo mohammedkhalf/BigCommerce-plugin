@@ -26,6 +26,8 @@ export default function AppLayout({ children }: PropsWithChildren) {
             <header className="topbar">
                 <button className="brand" onClick={() => visit('/dashboard')} type="button" aria-label="Tamara dashboard">
                     <span className="brand-mark" aria-hidden="true">t</span>
+                    <span className="brand-mark" aria-hidden="true">t</span>
+
                     <span>
                         <strong>Tamara</strong>
                         <small>Buy now, pay later</small>

@@ -22,7 +22,12 @@ Route::get('/marketplace-preview-assets/{asset}', function (string $asset) {
 })->name('marketplace.preview-assets');
 
 Route::controller(BigCommerceOAuthController::class)->group(function (): void {
+    // BigCommerce may call the install callback at either /auth or /auth/install.
+    // Accept both paths to be tolerant of marketplace callback URLs.
     Route::get('/auth', 'auth')->name('bigcommerce.auth');
+    Route::get('/auth/install', 'auth')->name('bigcommerce.auth.install');
+    // Some BigCommerce flows use /auth/load as the callback — accept that too.
+    Route::get('/auth/load', 'load')->name('bigcommerce.auth.load');
     Route::get('/load', 'load')->name('bigcommerce.load');
     Route::get('/uninstall', 'uninstall')->name('bigcommerce.uninstall');
     Route::get('/remove_user', 'removeUser')->name('bigcommerce.remove-user');

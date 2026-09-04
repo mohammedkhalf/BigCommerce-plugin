@@ -550,6 +550,7 @@ class ComposerStaticInit626b9e7ddd47fb7eff9aaa53cce0c9ad
         'App\\Http\\Controllers\\BigCommerceWebhookController' => __DIR__ . '/../..' . '/app/Http/Controllers/BigCommerceWebhookController.php',
         'App\\Http\\Controllers\\CheckoutController' => __DIR__ . '/../..' . '/app/Http/Controllers/CheckoutController.php',
         'App\\Http\\Controllers\\Controller' => __DIR__ . '/../..' . '/app/Http/Controllers/Controller.php',
+        'App\\Http\\Controllers\\MarketplacePreviewController' => __DIR__ . '/../..' . '/app/Http/Controllers/MarketplacePreviewController.php',
         'App\\Http\\Controllers\\TamaraSettingsController' => __DIR__ . '/../..' . '/app/Http/Controllers/TamaraSettingsController.php',
         'App\\Http\\Controllers\\TamaraWebhookController' => __DIR__ . '/../..' . '/app/Http/Controllers/TamaraWebhookController.php',
         'App\\Http\\Middleware\\FrameAncestors' => __DIR__ . '/../..' . '/app/Http/Middleware/FrameAncestors.php',

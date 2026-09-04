@@ -4,7 +4,7 @@ return [
     'client_id' => env('BIGCOMMERCE_CLIENT_ID'),
     'client_secret' => env('BIGCOMMERCE_CLIENT_SECRET'),
     'app_id' => env('BIGCOMMERCE_APP_ID'),
-    'auth_callback' => env('BIGCOMMERCE_AUTH_CALLBACK', env('APP_URL').'/auth'),
+    'auth_callback' => env('BIGCOMMERCE_AUTH_CALLBACK', env('APP_URL').'/auth/install'),
     'oauth_url' => env('BIGCOMMERCE_OAUTH_URL', 'https://login.bigcommerce.com/oauth2/token'),
     'api_url' => env('BIGCOMMERCE_API_URL', 'https://api.bigcommerce.com'),
     'paid_status_id' => (int) env('BIGCOMMERCE_PAID_STATUS_ID', 11),

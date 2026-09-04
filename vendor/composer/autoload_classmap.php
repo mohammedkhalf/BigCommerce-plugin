@@ -14,6 +14,7 @@ return array(
     'App\\Http\\Controllers\\BigCommerceWebhookController' => $baseDir . '/app/Http/Controllers/BigCommerceWebhookController.php',
     'App\\Http\\Controllers\\CheckoutController' => $baseDir . '/app/Http/Controllers/CheckoutController.php',
     'App\\Http\\Controllers\\Controller' => $baseDir . '/app/Http/Controllers/Controller.php',
+    'App\\Http\\Controllers\\MarketplacePreviewController' => $baseDir . '/app/Http/Controllers/MarketplacePreviewController.php',
     'App\\Http\\Controllers\\TamaraSettingsController' => $baseDir . '/app/Http/Controllers/TamaraSettingsController.php',
     'App\\Http\\Controllers\\TamaraWebhookController' => $baseDir . '/app/Http/Controllers/TamaraWebhookController.php',
     'App\\Http\\Middleware\\FrameAncestors' => $baseDir . '/app/Http/Middleware/FrameAncestors.php',
