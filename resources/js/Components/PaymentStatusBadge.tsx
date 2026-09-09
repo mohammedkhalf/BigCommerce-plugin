@@ -3,9 +3,9 @@ import { Badge } from '@bigcommerce/big-design';
 export default function PaymentStatusBadge({ status }: { status?: string }) {
     const normalized = (status || 'unknown').toLowerCase();
     const variants = {
-        approved: 'success',
+        approved: 'primary',
         captured: 'success',
-        authorised: 'success',
+        authorised: 'secondary',
         completed: 'success',
         canceled: 'danger',
         cancelled: 'danger',

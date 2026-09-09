@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Enums\PaymentSessionStatus;
+use App\Support\TamaraOrderStatus;
 use App\Models\PaymentSession;
 use App\Models\Store;
 use App\Services\BigCommerce\CheckoutService;
@@ -126,29 +127,52 @@ final readonly class CheckoutController
         $session = PaymentSession::query()->whereKey($request->query('session'))->firstOrFail();
         abort_unless($session->tamara_order_id, 404);
         $details = $this->orders->details($session->store, $session->tamara_order_id);
-        $status = strtolower((string) ($details['status'] ?? $details['order_status'] ?? ''));
-        if ($result !== 'success' || ! in_array($status, ['approved', 'authorised', 'authorized', 'fully_captured'], true)) {
+        $mapped = TamaraOrderStatus::fromDetails($details);
+        if ($result !== 'success' || ! in_array($mapped, [
+            PaymentSessionStatus::Approved,
+            PaymentSessionStatus::Authorised,
+            PaymentSessionStatus::Captured,
+        ], true)) {
             return redirect()->away($session->store->metadata['secure_url'] ?? '/');
         }
 
-        $nextStatus = in_array($status, ['authorised', 'authorized'], true)
-            ? PaymentSessionStatus::Authorised
-            : PaymentSessionStatus::Approved;
-
-        if ($session->status !== PaymentSessionStatus::Completed) {
-            $session->update([
-                'status' => $nextStatus,
-                'authorised_at' => $nextStatus === PaymentSessionStatus::Authorised
-                    ? ($session->authorised_at ?? now())
-                    : $session->authorised_at,
-                'tamara_snapshot' => $details,
-            ]);
-        } else {
-            $session->update(['tamara_snapshot' => $details]);
-        }
+        $this->applyTamaraDetails($session, $details, $mapped);
         $base = rtrim((string) ($session->store->metadata['secure_url'] ?? ''), '/');
 
         return redirect()->away("{$base}/checkout/order-confirmation/{$session->bc_order_id}?t=".urlencode($session->checkout_token));
+    }
+
+    private function applyTamaraDetails(
+        PaymentSession $session,
+        array $details,
+        PaymentSessionStatus $mapped,
+    ): void {
+        if ($session->status === PaymentSessionStatus::Completed) {
+            $session->update(['tamara_snapshot' => $details]);
+
+            return;
+        }
+
+        $updates = ['tamara_snapshot' => $details];
+
+        if ($mapped === PaymentSessionStatus::Captured) {
+            $updates['status'] = PaymentSessionStatus::Captured;
+            $updates['captured_at'] = $session->captured_at ?? now();
+        } elseif ($mapped === PaymentSessionStatus::Authorised && ! in_array($session->status, [
+            PaymentSessionStatus::Captured,
+            PaymentSessionStatus::PartiallyCaptured,
+        ], true)) {
+            $updates['status'] = PaymentSessionStatus::Authorised;
+            $updates['authorised_at'] = $session->authorised_at ?? now();
+        } elseif ($mapped === PaymentSessionStatus::Approved && ! in_array($session->status, [
+            PaymentSessionStatus::Authorised,
+            PaymentSessionStatus::Captured,
+            PaymentSessionStatus::PartiallyCaptured,
+        ], true)) {
+            $updates['status'] = PaymentSessionStatus::Approved;
+        }
+
+        $session->update($updates);
     }
 
     private function tamaraPayload(PaymentSession $session, array $checkout): array

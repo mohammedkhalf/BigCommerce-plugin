@@ -236,6 +236,35 @@ class PaymentBackendTest extends TestCase
         $this->assertNotNull($session->authorised_at);
     }
 
+    public function test_tamara_order_captured_webhook_with_fully_captured_status_sets_captured(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout123',
+            'bc_order_id' => '123', 'tamara_order_id' => '12345678-1234-1234-1234-123456789abc',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'authorised',
+        ]);
+        $jwt = JWT::encode(['iat' => now()->timestamp, 'exp' => now()->addMinute()->timestamp], 'notification-secret-token-32-bytes', 'HS256');
+        $payload = [
+            'order_id' => '12345678-1234-1234-1234-123456789abc',
+            'order_reference_id' => '123',
+            'event_type' => 'order_captured',
+            'data' => [
+                'status' => 'fully_captured',
+                'captured_amount' => ['amount' => 109.0, 'currency' => 'SAR'],
+            ],
+        ];
+
+        $this->withToken($jwt)->postJson('/webhooks/tamara', $payload)->assertNoContent();
+
+        $session->refresh();
+        $this->assertSame('captured', $session->status->value);
+        $this->assertNotNull($session->captured_at);
+    }
+
     public function test_tamara_order_captured_webhook_sets_captured_status(): void
     {
         $this->store->tamaraConfig()->create([
@@ -340,7 +369,11 @@ class PaymentBackendTest extends TestCase
             'amount' => 109, 'currency' => 'SAR', 'status' => 'authorised', 'authorised_at' => now(),
         ]);
         Http::fake([
-            'https://api-sandbox.tamara.test/payments/capture' => Http::response(['capture_id' => 'cap-1']),
+            'https://api-sandbox.tamara.test/payments/capture' => Http::response([
+                'capture_id' => 'cap-1',
+                'status' => 'fully_captured',
+                'captured_amount' => ['amount' => 109, 'currency' => 'SAR'],
+            ]),
         ]);
 
         $payload = [
@@ -472,6 +505,33 @@ class PaymentBackendTest extends TestCase
             'id' => $event->id,
             'processing_status' => 'ignored',
         ]);
+    }
+
+    public function test_checkout_complete_sets_captured_when_tamara_order_is_fully_captured(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout128',
+            'bc_order_id' => '128', 'tamara_order_id' => '88888888-8888-8888-8888-888888888888',
+            'checkout_token' => 'token-128', 'amount' => 109, 'currency' => 'SAR', 'status' => 'authorised',
+        ]);
+        Http::fake([
+            'https://api-sandbox.tamara.test/merchants/orders/*' => Http::response([
+                'order_id' => '88888888-8888-8888-8888-888888888888',
+                'status' => 'fully_captured',
+                'total_amount' => ['amount' => 109, 'currency' => 'SAR'],
+            ]),
+        ]);
+
+        $this->get(route('checkout.complete', ['result' => 'success', 'session' => $session->id]))
+            ->assertRedirect();
+
+        $session->refresh();
+        $this->assertSame('captured', $session->status->value);
+        $this->assertNotNull($session->captured_at);
     }
 
     public function test_bigcommerce_webhook_rejects_missing_authentication(): void

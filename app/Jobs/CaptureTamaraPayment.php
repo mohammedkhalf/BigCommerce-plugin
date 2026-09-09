@@ -8,6 +8,7 @@ use App\Models\PaymentSession;
 use App\Models\WebhookEvent;
 use App\Services\Tamara\TamaraOrderService;
 use App\Support\TamaraMoney;
+use App\Support\TamaraOrderStatus;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Carbon;
@@ -69,10 +70,14 @@ final class CaptureTamaraPayment implements ShouldQueue
 
         try {
             if (! $session->captured_at) {
-                $orders->capture($session->store, $session->tamara_order_id, $this->capturePayload($session, $event));
+                $response = $orders->capture($session->store, $session->tamara_order_id, $this->capturePayload($session, $event));
+                $status = TamaraOrderStatus::fromDetails($response) ?? PaymentSessionStatus::Captured;
                 $session->update([
-                    'status' => PaymentSessionStatus::Captured,
+                    'status' => $status === PaymentSessionStatus::PartiallyCaptured
+                        ? PaymentSessionStatus::PartiallyCaptured
+                        : PaymentSessionStatus::Captured,
                     'captured_at' => now(),
+                    'tamara_snapshot' => array_merge($session->tamara_snapshot ?? [], $response),
                 ]);
             }
             $event->update([
@@ -133,10 +138,12 @@ final class CaptureTamaraPayment implements ShouldQueue
 
     private function syncTamaraCapture(PaymentSession $session, WebhookEvent $event): void
     {
-        $status = $this->resolveCaptureStatus($session, $event->payload ?? []);
+        $payload = $event->payload ?? [];
+        $status = $this->resolveCaptureStatus($session, $payload);
         $session->update([
             'status' => $status,
             'captured_at' => $session->captured_at ?? now(),
+            'tamara_snapshot' => array_merge($session->tamara_snapshot ?? [], $payload),
         ]);
         $event->update([
             'payment_session_id' => $session->id,
@@ -147,6 +154,10 @@ final class CaptureTamaraPayment implements ShouldQueue
 
     private function resolveCaptureStatus(PaymentSession $session, array $payload): PaymentSessionStatus
     {
+        if (TamaraOrderStatus::isFullyCaptured($payload)) {
+            return PaymentSessionStatus::Captured;
+        }
+
         $capturedAmount = data_get($payload, 'data.captured_amount.amount');
         if ($capturedAmount !== null) {
             return (float) $capturedAmount >= (float) $session->amount
@@ -154,7 +165,8 @@ final class CaptureTamaraPayment implements ShouldQueue
                 : PaymentSessionStatus::PartiallyCaptured;
         }
 
-        if (str_contains((string) data_get($payload, 'data.status'), 'partial')) {
+        $status = TamaraOrderStatus::fromTamaraStatus((string) data_get($payload, 'data.status'));
+        if ($status === PaymentSessionStatus::PartiallyCaptured) {
             return PaymentSessionStatus::PartiallyCaptured;
         }
 
