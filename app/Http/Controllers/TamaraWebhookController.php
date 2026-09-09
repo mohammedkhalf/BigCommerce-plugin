@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Enums\PaymentSessionStatus;
 use App\Jobs\AuthoriseTamaraOrder;
+use App\Jobs\CaptureTamaraPayment;
 use App\Models\PaymentSession;
 use App\Models\WebhookEvent;
 use App\Services\Tamara\TamaraNotificationVerifier;
@@ -40,13 +41,7 @@ final readonly class TamaraWebhookController
                 'order_declined' => $this->syncStatus($session, $event, PaymentSessionStatus::Declined, failed: true),
                 'order_expired' => $this->syncStatus($session, $event, PaymentSessionStatus::Expired, failed: true),
                 'order_canceled', 'order_cancelled' => $this->syncStatus($session, $event, PaymentSessionStatus::Cancelled),
-                'order_captured' => $this->syncStatus(
-                    $session,
-                    $event,
-                    str_contains((string) data_get($payload, 'data.status'), 'partial')
-                        ? PaymentSessionStatus::PartiallyCaptured
-                        : PaymentSessionStatus::Captured,
-                ),
+                'order_captured' => CaptureTamaraPayment::dispatch($event->id),
                 'order_refunded' => $this->syncStatus(
                     $session,
                     $event,
