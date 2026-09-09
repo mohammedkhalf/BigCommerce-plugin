@@ -106,11 +106,17 @@ final class CaptureTamaraPayment implements ShouldQueue
     private function captureAmount(PaymentSession $session): array
     {
         $snapshot = $session->tamara_snapshot ?? [];
-        $amount = data_get($snapshot, 'authorized_amount.amount')
-            ?? data_get($snapshot, 'total_amount.amount')
-            ?? $session->amount;
+        foreach ([
+            data_get($snapshot, 'authorized_amount'),
+            data_get($snapshot, 'total_amount'),
+        ] as $candidate) {
+            $amount = TamaraMoney::extractAmount($candidate);
+            if ($amount !== null && $amount > 0) {
+                return TamaraMoney::format($amount, $session->currency);
+            }
+        }
 
-        return TamaraMoney::format($amount, $session->currency);
+        return TamaraMoney::format($session->amount, $session->currency);
     }
 
     private function shippingInfo(WebhookEvent $event, PaymentSession $session): array

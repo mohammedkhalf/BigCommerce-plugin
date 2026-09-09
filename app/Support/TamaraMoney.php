@@ -11,4 +11,15 @@ final class TamaraMoney
             'currency' => strtoupper($currency),
         ];
     }
+
+    public static function extractAmount(mixed $value): ?float
+    {
+        if (is_array($value)) {
+            $amount = $value['amount'] ?? null;
+
+            return is_numeric($amount) ? (float) $amount : null;
+        }
+
+        return is_numeric($value) ? (float) $value : null;
+    }
 }

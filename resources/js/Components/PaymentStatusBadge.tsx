@@ -10,7 +10,7 @@ export default function PaymentStatusBadge({ status }: { status?: string }) {
         canceled: 'danger',
         cancelled: 'danger',
         declined: 'danger',
-        refunded: 'secondary',
+        refunded: 'danger',
         pending: 'warning',
         new: 'primary',
     } as const;

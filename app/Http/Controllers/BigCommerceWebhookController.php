@@ -35,7 +35,7 @@ final class BigCommerceWebhookController
 
     private function dispatchJob(WebhookEvent $event): void
     {
-        if (str_contains($event->event_type, 'refund')) {
+        if ($this->shouldRefund($event)) {
             RefundTamaraPayment::dispatch($event->id);
 
             return;
@@ -48,6 +48,24 @@ final class BigCommerceWebhookController
         }
 
         $event->update(['processing_status' => 'ignored', 'processed_at' => now()]);
+    }
+
+    private function shouldRefund(WebhookEvent $event): bool
+    {
+        if ($event->event_type === 'store/order/refund/created') {
+            return true;
+        }
+
+        if ($event->event_type !== 'store/order/statusUpdated') {
+            return false;
+        }
+
+        $newStatusId = (int) data_get($event->payload, 'data.status.new_status_id');
+
+        return in_array($newStatusId, [
+            (int) config('bigcommerce.refunded_status_id', 4),
+            (int) config('bigcommerce.partially_refunded_status_id', 14),
+        ], true);
     }
 
     private function shouldCapture(WebhookEvent $event): bool

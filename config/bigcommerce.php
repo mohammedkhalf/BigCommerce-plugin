@@ -9,6 +9,8 @@ return [
     'api_url' => env('BIGCOMMERCE_API_URL', 'https://api.bigcommerce.com'),
     'paid_status_id' => (int) env('BIGCOMMERCE_PAID_STATUS_ID', 11),
     'shipped_status_id' => (int) env('BIGCOMMERCE_SHIPPED_STATUS_ID', 2),
+    'refunded_status_id' => (int) env('BIGCOMMERCE_REFUNDED_STATUS_ID', 4),
+    'partially_refunded_status_id' => (int) env('BIGCOMMERCE_PARTIALLY_REFUNDED_STATUS_ID', 14),
     'checkout_script_sri' => env('BIGCOMMERCE_CHECKOUT_SCRIPT_SRI'),
     'jwt_issuer' => env('BIGCOMMERCE_JWT_ISSUER', 'bc'),
     'app_jwt_secret' => env('APP_SESSION_JWT_SECRET', env('APP_KEY')),

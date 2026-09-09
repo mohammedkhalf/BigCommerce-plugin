@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enums\WebhookSource;
 use App\Jobs\AuthoriseTamaraOrder;
 use App\Jobs\CaptureTamaraPayment;
+use App\Jobs\RefundTamaraPayment;
 use App\Models\PaymentSession;
 use App\Models\Store;
 use App\Models\WebhookEvent;
@@ -532,6 +533,214 @@ class PaymentBackendTest extends TestCase
         $session->refresh();
         $this->assertSame('captured', $session->status->value);
         $this->assertNotNull($session->captured_at);
+    }
+
+    public function test_bigcommerce_order_status_updated_to_refunded_dispatches_refund(): void
+    {
+        Queue::fake();
+        $payload = [
+            'scope' => 'store/order/statusUpdated',
+            'producer' => 'stores/abc123',
+            'hash' => 'bc-event-refunded',
+            'data' => [
+                'type' => 'order',
+                'id' => 127,
+                'status' => ['previous_status_id' => 2, 'new_status_id' => 4],
+            ],
+        ];
+        $headers = [
+            'X-Tamara-Webhook-Token' => hash_hmac('sha256', 'abc123', (string) config('bigcommerce.client_secret')),
+        ];
+
+        $this->withHeaders($headers)->postJson('/webhooks/bigcommerce', $payload)->assertNoContent();
+
+        Queue::assertPushed(RefundTamaraPayment::class, 1);
+        Queue::assertNotPushed(CaptureTamaraPayment::class);
+    }
+
+    public function test_bigcommerce_order_refunded_webhook_refunds_tamara_payment(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout127',
+            'bc_order_id' => '127', 'tamara_order_id' => '99999999-9999-9999-9999-999999999999',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'captured', 'captured_at' => now(),
+            'tamara_snapshot' => ['captured_amount' => ['amount' => 109, 'currency' => 'SAR']],
+        ]);
+        Http::fake([
+            'https://api-sandbox.tamara.test/payments/simplified-refund/*' => Http::response([
+                'refund_id' => 'ref-1',
+                'status' => 'fully_refunded',
+                'refunded_amount' => ['amount' => 109, 'currency' => 'SAR'],
+            ]),
+        ]);
+
+        $payload = [
+            'scope' => 'store/order/statusUpdated',
+            'producer' => 'stores/abc123',
+            'hash' => 'bc-event-refunded-process',
+            'data' => [
+                'type' => 'order',
+                'id' => 127,
+                'status' => ['previous_status_id' => 2, 'new_status_id' => 4],
+            ],
+        ];
+        $headers = [
+            'X-Tamara-Webhook-Token' => hash_hmac('sha256', 'abc123', (string) config('bigcommerce.client_secret')),
+        ];
+
+        $this->withHeaders($headers)->postJson('/webhooks/bigcommerce', $payload)->assertNoContent();
+        $this->artisan('queue:work', ['--once' => true, '--stop-when-empty' => true]);
+
+        $session->refresh();
+        $this->assertSame('refunded', $session->status->value);
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/payments/simplified-refund/')
+            && ($request['total_amount']['amount'] ?? null) === 109.0);
+    }
+
+    public function test_refund_job_ignores_non_captured_payment(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout126',
+            'bc_order_id' => '126', 'tamara_order_id' => 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'authorised', 'authorised_at' => now(),
+        ]);
+        $event = WebhookEvent::query()->create([
+            'store_id' => $this->store->id,
+            'source' => WebhookSource::BigCommerce,
+            'external_id' => 'bc-event-refund-authorised',
+            'event_type' => 'store/order/statusUpdated',
+            'payload' => [
+                'scope' => 'store/order/statusUpdated',
+                'data' => ['type' => 'order', 'id' => 126, 'status' => ['new_status_id' => 4]],
+            ],
+            'received_at' => now(),
+        ]);
+        Http::fake();
+
+        (new RefundTamaraPayment($event->id))->handle(app(TamaraOrderService::class));
+
+        Http::assertNothingSent();
+        $this->assertDatabaseHas('webhook_events', [
+            'id' => $event->id,
+            'processing_status' => 'ignored',
+        ]);
+    }
+
+    public function test_refund_payload_uses_captured_amount_from_snapshot(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout129',
+            'bc_order_id' => '129', 'tamara_order_id' => 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+            'amount' => '109.000', 'currency' => 'SAR', 'status' => 'captured', 'captured_at' => now(),
+            'tamara_snapshot' => ['captured_amount' => ['amount' => 109, 'currency' => 'SAR']],
+        ]);
+        Http::fake([
+            'https://api-sandbox.tamara.test/payments/simplified-refund/*' => Http::response([
+                'status' => 'fully_refunded',
+                'refunded_amount' => ['amount' => 109, 'currency' => 'SAR'],
+            ]),
+        ]);
+        $event = WebhookEvent::query()->create([
+            'store_id' => $this->store->id,
+            'source' => WebhookSource::BigCommerce,
+            'external_id' => 'bc-event-refund-format',
+            'event_type' => 'store/order/statusUpdated',
+            'payload' => [
+                'scope' => 'store/order/statusUpdated',
+                'data' => [
+                    'type' => 'order',
+                    'id' => 129,
+                    'status' => ['new_status_id' => 4],
+                    'refunded_amount' => ['amount' => 109, 'currency' => 'SAR'],
+                ],
+            ],
+            'received_at' => now(),
+        ]);
+
+        (new RefundTamaraPayment($event->id))->handle(app(TamaraOrderService::class));
+
+        Http::assertSent(fn ($request) => ($request['total_amount']['amount'] ?? null) === 109.0
+            && ($request['total_amount']['currency'] ?? null) === 'SAR');
+    }
+
+    public function test_refund_payload_fetches_captured_amount_from_tamara_when_missing(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout130',
+            'bc_order_id' => '130', 'tamara_order_id' => 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'captured', 'captured_at' => now(),
+            'tamara_snapshot' => [],
+        ]);
+        Http::fake([
+            'https://api-sandbox.tamara.test/merchants/orders/*' => Http::response([
+                'status' => 'fully_captured',
+                'captured_amount' => ['amount' => 109, 'currency' => 'SAR'],
+            ]),
+            'https://api-sandbox.tamara.test/payments/simplified-refund/*' => Http::response([
+                'status' => 'fully_refunded',
+                'refunded_amount' => ['amount' => 109, 'currency' => 'SAR'],
+            ]),
+        ]);
+        $event = WebhookEvent::query()->create([
+            'store_id' => $this->store->id,
+            'source' => WebhookSource::BigCommerce,
+            'external_id' => 'bc-event-refund-details',
+            'event_type' => 'store/order/statusUpdated',
+            'payload' => [
+                'scope' => 'store/order/statusUpdated',
+                'data' => ['type' => 'order', 'id' => 130, 'status' => ['new_status_id' => 4]],
+            ],
+            'received_at' => now(),
+        ]);
+
+        (new RefundTamaraPayment($event->id))->handle(app(TamaraOrderService::class));
+
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/payments/simplified-refund/')
+            && ($request['total_amount']['amount'] ?? null) === 109.0);
+    }
+
+    public function test_tamara_order_refunded_webhook_sets_refunded_status(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout125',
+            'bc_order_id' => '125', 'tamara_order_id' => 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'captured', 'captured_at' => now(),
+        ]);
+        $jwt = JWT::encode(['iat' => now()->timestamp, 'exp' => now()->addMinute()->timestamp], 'notification-secret-token-32-bytes', 'HS256');
+        $payload = [
+            'order_id' => 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+            'order_reference_id' => '125',
+            'event_type' => 'order_refunded',
+            'data' => [
+                'status' => 'fully_refunded',
+                'refunded_amount' => ['amount' => 109.0, 'currency' => 'SAR'],
+            ],
+        ];
+
+        $this->withToken($jwt)->postJson('/webhooks/tamara', $payload)->assertNoContent();
+
+        $session->refresh();
+        $this->assertSame('refunded', $session->status->value);
     }
 
     public function test_bigcommerce_webhook_rejects_missing_authentication(): void
