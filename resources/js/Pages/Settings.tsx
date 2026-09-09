@@ -11,6 +11,7 @@ interface Props {
     environment?: Environment;
     merchantTokenConfigured?: boolean;
     notificationTokenConfigured?: boolean;
+    publicKeyConfigured?: boolean;
     saveEndpoint?: string;
     testEndpoint?: string;
     enableEndpoint?: string;
@@ -35,6 +36,7 @@ export default function Settings(props: Props) {
                     environment={props.environment}
                     merchantTokenConfigured={props.merchantTokenConfigured}
                     notificationTokenConfigured={props.notificationTokenConfigured}
+                    publicKeyConfigured={props.publicKeyConfigured}
                 />
                 <div className="settings-side">
                     <Panel>

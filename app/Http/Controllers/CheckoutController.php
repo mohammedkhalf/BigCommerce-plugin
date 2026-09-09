@@ -8,6 +8,7 @@ use App\Models\Store;
 use App\Services\BigCommerce\CheckoutService;
 use App\Services\Tamara\TamaraCheckoutService;
 use App\Services\Tamara\TamaraOrderService;
+use App\Support\BigCommerceScopes;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -43,18 +44,45 @@ final readonly class CheckoutController
             ->firstOrFail();
         $this->assertOrigin($request, $store);
 
+        $missingScopes = BigCommerceScopes::missingForCheckout($store);
+        if ($missingScopes !== []) {
+            return response()->json([
+                'message' => 'The app is missing required BigCommerce OAuth scopes for checkout. In BigCommerce DevTools, enable Checkouts (modify), save the app, then reinstall it on this store.',
+                'missing_scope_groups' => $missingScopes,
+                'granted_scopes' => $store->scopes ?? [],
+            ], 503)->withHeaders($this->corsHeaders($request));
+        }
+
         $existing = $store->paymentSessions()->where('bc_checkout_id', $input['checkout_id'])->first();
+
         if ($existing && filled($existing->tamara_snapshot['checkout_url'] ?? null)) {
             return response()->json(['checkout_url' => $existing->tamara_snapshot['checkout_url']])->withHeaders($this->corsHeaders($request));
         }
 
         $raw = $this->bigCommerce->get($store, $input['checkout_id']);
         $checkout = $raw['data'] ?? $raw;
-        $amount = (float) ($checkout['grandTotal'] ?? $checkout['cart']['cartAmount'] ?? 0);
-        $currency = strtoupper((string) ($checkout['currency']['code'] ?? $checkout['cart']['currency']['code'] ?? $store->currency));
-        if ($amount <= 0 || ! preg_match('/^[A-Z]{3}$/', $currency)) {
-            throw ValidationException::withMessages(['checkout_id' => 'BigCommerce returned an invalid checkout total.']);
+
+        try {
+            $checkout = $this->bigCommerce->ensureShippingSelected($store, $input['checkout_id'], $checkout);
+        } catch (\RuntimeException $e) {
+            throw ValidationException::withMessages(['checkout_id' => $e->getMessage()]);
         }
+
+        $amount = $this->resolveCheckoutAmount($checkout);
+        $currency = $this->resolveCheckoutCurrency($checkout, $store->currency);
+
+        if ($amount <= 0) {
+            throw ValidationException::withMessages([
+                'checkout_id' => 'BigCommerce returned an invalid checkout total. Add billing address and shipping consignment in Postman (steps 4–5), then verify grandTotal or cartAmount is greater than zero.',
+            ]);
+        }
+        if ($currency === null) {
+            throw ValidationException::withMessages([
+                'checkout_id' => 'BigCommerce returned an invalid checkout currency. Complete the checkout in Postman or sync store metadata.',
+            ]);
+        }
+
+
         $allowlist = $store->tamaraConfig->currency_allowlist ?? [];
         if ($allowlist && ! in_array($currency, $allowlist, true)) {
             throw ValidationException::withMessages(['checkout_id' => 'Tamara is not enabled for this currency.']);
@@ -62,6 +90,9 @@ final readonly class CheckoutController
 
         $token = $this->bigCommerce->createToken($store, $input['checkout_id']);
         $order = $this->bigCommerce->createOrder($store, $input['checkout_id']);
+
+
+
         $orderData = $order['data'] ?? $order;
         $orderId = (string) ($orderData['id'] ?? $orderData['orderId'] ?? '');
         if ($orderId === '') {
@@ -110,7 +141,11 @@ final readonly class CheckoutController
     private function tamaraPayload(PaymentSession $session, array $checkout): array
     {
         $customer = $checkout['customer'] ?? [];
-        $address = $checkout['billingAddress'] ?? $checkout['consignments'][0]['shippingAddress'] ?? [];
+        $address = $checkout['billingAddress']
+            ?? $checkout['billing_address']
+            ?? $checkout['consignments'][0]['shippingAddress']
+            ?? $checkout['consignments'][0]['shipping_address']
+            ?? [];
         $return = fn (string $result) => route('checkout.complete', ['result' => $result, 'session' => $session->id]);
 
         return [
@@ -118,15 +153,15 @@ final readonly class CheckoutController
             'order_number' => $session->bc_order_id,
             'total_amount' => ['amount' => $session->amount, 'currency' => $session->currency],
             'description' => 'BigCommerce order '.$session->bc_order_id,
-            'country_code' => $address['countryCode'] ?? 'SA',
+            'country_code' => $this->pick($address, 'countryCode', 'country_code', 'SA'),
             'payment_type' => 'PAY_BY_INSTALMENTS',
             'locale' => str_replace('-', '_', $session->store->locale ?? 'en_US'),
             'items' => $this->items($checkout, $session->currency),
             'consumer' => [
-                'first_name' => $customer['firstName'] ?? $address['firstName'] ?? '',
-                'last_name' => $customer['lastName'] ?? $address['lastName'] ?? '',
-                'phone_number' => $address['phone'] ?? '',
-                'email' => $customer['email'] ?? $address['email'] ?? '',
+                'first_name' => $this->pick($customer, 'firstName', 'first_name', $this->pick($address, 'firstName', 'first_name')),
+                'last_name' => $this->pick($customer, 'lastName', 'last_name', $this->pick($address, 'lastName', 'last_name')),
+                'phone_number' => $this->pick($address, 'phone', 'phone'),
+                'email' => $this->pick($customer, 'email', 'email', $this->pick($address, 'email', 'email')),
             ],
             'billing_address' => $this->address($address),
             'shipping_address' => $this->address($address),
@@ -140,25 +175,82 @@ final readonly class CheckoutController
 
     private function items(array $checkout, string $currency): array
     {
-        $groups = $checkout['cart']['lineItems'] ?? [];
+        $lineItems = $checkout['cart']['lineItems'] ?? $checkout['cart']['line_items'] ?? [];
 
-        return collect($groups)->flatten(1)->map(fn ($item) => [
-            'reference_id' => (string) ($item['productId'] ?? $item['id']),
+        return collect([
+            ...($lineItems['physicalItems'] ?? $lineItems['physical_items'] ?? []),
+            ...($lineItems['digitalItems'] ?? $lineItems['digital_items'] ?? []),
+            ...($lineItems['customItems'] ?? $lineItems['custom_items'] ?? []),
+        ])->map(fn ($item) => [
+            'reference_id' => (string) ($this->pick($item, 'productId', 'product_id') ?: $item['id']),
             'type' => 'Physical', 'name' => $item['name'] ?? 'Item',
             'sku' => $item['sku'] ?? '', 'quantity' => $item['quantity'] ?? 1,
-            'unit_price' => ['amount' => $item['salePrice'] ?? $item['listPrice'] ?? 0, 'currency' => $currency],
-            'total_amount' => ['amount' => $item['extendedSalePrice'] ?? 0, 'currency' => $currency],
+            'unit_price' => [
+                'amount' => $this->pick($item, 'salePrice', 'sale_price', $this->pick($item, 'listPrice', 'list_price', 0)),
+                'currency' => $currency,
+            ],
+            'total_amount' => [
+                'amount' => $this->pick($item, 'extendedSalePrice', 'extended_sale_price', 0),
+                'currency' => $currency,
+            ],
         ])->values()->all();
     }
 
     private function address(array $address): array
     {
         return [
-            'first_name' => $address['firstName'] ?? '', 'last_name' => $address['lastName'] ?? '',
-            'line1' => $address['address1'] ?? '', 'line2' => $address['address2'] ?? '',
-            'city' => $address['city'] ?? '', 'region' => $address['stateOrProvince'] ?? '',
-            'postal_code' => $address['postalCode'] ?? '', 'country_code' => $address['countryCode'] ?? 'SA',
+            'first_name' => $this->pick($address, 'firstName', 'first_name'),
+            'last_name' => $this->pick($address, 'lastName', 'last_name'),
+            'line1' => $this->pick($address, 'address1', 'address1'),
+            'line2' => $this->pick($address, 'address2', 'address2'),
+            'city' => $this->pick($address, 'city', 'city'),
+            'region' => $this->pick($address, 'stateOrProvince', 'state_or_province'),
+            'postal_code' => $this->pick($address, 'postalCode', 'postal_code'),
+            'country_code' => $this->pick($address, 'countryCode', 'country_code', 'SA'),
         ];
+    }
+
+    private function resolveCheckoutAmount(array $checkout): float
+    {
+        $grandTotal = (float) ($checkout['grandTotal'] ?? $checkout['grand_total'] ?? 0);
+        if ($grandTotal > 0) {
+            return $grandTotal;
+        }
+
+        $cart = $checkout['cart'] ?? [];
+        foreach (['cartAmount', 'cart_amount_inc_tax', 'cart_amount_ex_tax', 'baseAmount', 'base_amount'] as $key) {
+            $amount = (float) ($cart[$key] ?? 0);
+            if ($amount > 0) {
+                return $amount;
+            }
+        }
+
+        return 0;
+    }
+
+    private function pick(array $data, string $camel, string $snake, mixed $default = ''): mixed
+    {
+        return $data[$camel] ?? $data[$snake] ?? $default;
+    }
+
+    private function resolveCheckoutCurrency(array $checkout, ?string $storeCurrency): ?string
+    {
+        $cartCurrency = $checkout['cart']['currency'] ?? null;
+        $candidates = [
+            $checkout['currency']['code'] ?? null,
+            is_array($cartCurrency) ? ($cartCurrency['code'] ?? null) : $cartCurrency,
+            is_string($checkout['currency'] ?? null) ? $checkout['currency'] : null,
+            $storeCurrency,
+        ];
+
+        foreach ($candidates as $code) {
+            $code = strtoupper(trim((string) $code));
+            if (preg_match('/^[A-Z]{3}$/', $code)) {
+                return $code;
+            }
+        }
+
+        return null;
     }
 
     private function assertOrigin(Request $request, Store $store): void

@@ -3,6 +3,7 @@
 namespace App\Services\Tamara;
 
 use App\Models\Store;
+use App\Support\OutboundHttp;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -29,10 +30,12 @@ final class TamaraClient
 
     private function http(string $token): PendingRequest
     {
-        return Http::acceptJson()
-            ->withToken($token)
-            ->withHeaders(['Content-Type' => 'application/json'])
-            ->connectTimeout(5)->timeout(20)
-            ->retry(3, 250, throw: false);
+        return OutboundHttp::apply(
+            Http::acceptJson()
+                ->withToken($token)
+                ->withHeaders(['Content-Type' => 'application/json'])
+                ->connectTimeout(5)->timeout(20)
+                ->retry(3, 250, throw: false),
+        );
     }
 }

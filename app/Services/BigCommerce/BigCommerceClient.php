@@ -3,6 +3,7 @@
 namespace App\Services\BigCommerce;
 
 use App\Models\Store;
+use App\Support\OutboundHttp;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -27,10 +28,12 @@ final class BigCommerceClient
 
     private function http(Store $store): PendingRequest
     {
-        return Http::acceptJson()
-            ->withHeaders(['X-Auth-Token' => $store->access_token])
-            ->connectTimeout(5)->timeout(20)
-            ->retry(3, 200, throw: false);
+        return OutboundHttp::apply(
+            Http::acceptJson()
+                ->withHeaders(['X-Auth-Token' => $store->access_token])
+                ->connectTimeout(5)->timeout(20)
+                ->retry(3, 200, throw: false),
+        );
     }
 
     private function url(Store $store, string $path): string

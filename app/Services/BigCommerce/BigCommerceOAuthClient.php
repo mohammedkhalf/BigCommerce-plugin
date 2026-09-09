@@ -2,6 +2,7 @@
 
 namespace App\Services\BigCommerce;
 
+use App\Support\OutboundHttp;
 use Illuminate\Support\Facades\Http;
 
 final class BigCommerceOAuthClient
@@ -11,21 +12,13 @@ final class BigCommerceOAuthClient
      */
     public function exchange(string $code, string $context, string $scope): array
     {
-        $request = Http::asForm()
-            ->acceptJson()
-            // Total request timeout (seconds)
-            ->timeout(30)
-            // Limit connect timeout separately for faster failure on network issues
-            ->withOptions(['connect_timeout' => 10])
-            ->retry(2, 200);
-
-        // In local/dev environments some machines (CI, devboxes) may not have a
-        // complete CA bundle which causes cURL error 60 when calling BigCommerce.
-        // For local development only, disable peer verification to allow installs.
-        // IMPORTANT: do NOT disable verification in production.
-        if (app()->environment('local', 'testing')) {
-            $request = $request->withoutVerifying();
-        }
+        $request = OutboundHttp::apply(
+            Http::asForm()
+                ->acceptJson()
+                ->timeout(30)
+                ->withOptions(['connect_timeout' => 10])
+                ->retry(2, 200),
+        );
 
         return $request->post(config('bigcommerce.oauth_url'), [
                 'client_id' => config('bigcommerce.client_id'),

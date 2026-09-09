@@ -12,4 +12,26 @@ return [
     'jwt_issuer' => env('BIGCOMMERCE_JWT_ISSUER', 'bc'),
     'app_jwt_secret' => env('APP_SESSION_JWT_SECRET', env('APP_KEY')),
     'app_jwt_ttl' => 60 * 60 * 12,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Required OAuth scopes
+    |--------------------------------------------------------------------------
+    |
+    | Enable these in BigCommerce DevTools for your app, then reinstall on each
+    | store so a new access token is issued with the updated scopes.
+    |
+    */
+    'oauth_scopes' => [
+        'checkout' => [
+            'checkouts' => ['store_checkout', 'store_checkouts'],
+        ],
+        'install' => [
+            'checkouts' => ['store_checkout', 'store_checkouts'],
+            'checkout_content' => ['store_content_checkout'],
+            'content' => ['store_v2_content'],
+            'orders' => ['store_v2_orders'],
+            'information' => ['store_v2_information', 'store_v2_information_read_only'],
+        ],
+    ],
 ];

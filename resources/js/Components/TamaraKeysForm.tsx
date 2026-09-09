@@ -7,6 +7,7 @@ interface KeysFormProps {
     environment?: Environment;
     merchantTokenConfigured?: boolean;
     notificationTokenConfigured?: boolean;
+    publicKeyConfigured?: boolean;
     endpoint?: string;
     testEndpoint?: string;
     enableEndpoint?: string;
@@ -19,6 +20,7 @@ export default function TamaraKeysForm({
     environment = 'sandbox',
     merchantTokenConfigured = false,
     notificationTokenConfigured = false,
+    publicKeyConfigured = false,
     endpoint,
     testEndpoint,
     enableEndpoint,
@@ -29,6 +31,7 @@ export default function TamaraKeysForm({
     const [mode, setMode] = useState<Environment>(environment);
     const [merchantToken, setMerchantToken] = useState('');
     const [notificationToken, setNotificationToken] = useState('');
+    const [publicKey, setPublicKey] = useState('');
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string }>();
 
@@ -44,11 +47,12 @@ export default function TamaraKeysForm({
             const response = await authorizedFetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ environment: mode, merchantToken, notificationToken }),
+                body: JSON.stringify({ environment: mode, merchantToken, notificationToken, publicKey }),
             });
             if (!response.ok) throw new Error('Unable to save credentials.');
             setMerchantToken('');
             setNotificationToken('');
+            setPublicKey('');
             setMessage({ type: 'success', text: 'Credentials saved securely.' });
             onSaved?.();
         } catch (error) {
@@ -104,6 +108,14 @@ export default function TamaraKeysForm({
                     placeholder={notificationTokenConfigured ? 'Configured •••••••• (leave blank to keep)' : 'Enter notification token'}
                     type="password"
                     value={notificationToken}
+                />
+                <Input
+                    autoComplete="off"
+                    label="Public key"
+                    onChange={(event) => setPublicKey(event.target.value)}
+                    placeholder={publicKeyConfigured ? 'Configured •••••••• (leave blank to keep)' : 'Enter public key'}
+                    type="password"
+                    value={publicKey}
                 />
                 <div className="form-actions">
                     <Button isLoading={saving} type="submit">Save credentials</Button>

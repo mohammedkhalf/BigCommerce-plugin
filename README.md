@@ -13,6 +13,7 @@ Production-oriented Laravel 12 application integrating BigCommerce checkout and 
 
 - [Architecture](docs/architecture.md)
 - [Security](docs/security.md)
+- [OAuth scopes](docs/oauth-scopes.md) — fix BigCommerce 403 on checkout
 - [Testing and deployment](docs/testing.md)
 
 Merchant credentials are submitted through the authenticated app and encrypted at rest.

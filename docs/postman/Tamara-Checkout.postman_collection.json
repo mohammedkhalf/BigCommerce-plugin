@@ -1,0 +1,392 @@
+{
+  "info": {
+    "name": "Tamara BigCommerce Checkout",
+    "description": "Create a BigCommerce cart/checkout, then start Tamara sandbox checkout via the Laravel app.\n\nPrerequisites:\n1. Store API account with Products (read), Carts (modify), Checkouts (modify) scopes\n2. App installed on the store with Tamara sandbox credentials enabled\n3. `store_origin` must match `stores.metadata.secure_url` host in the app DB\n4. Queue worker running for webhook processing",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "BigCommerce",
+      "item": [
+        {
+          "name": "1. Get Products",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "const products = json.data || [];",
+                  "const simple = products.find((p) => !p.option_set_id);",
+                  "const product = simple || products[0];",
+                  "pm.test('Has product', () => pm.expect(product).to.be.an('object'));",
+                  "if (product?.id) {",
+                  "  pm.environment.set('product_id', String(product.id));",
+                  "  pm.environment.set('use_product_id_only', simple ? 'true' : 'false');",
+                  "  pm.environment.unset('variant_id');",
+                  "  console.log('product_id =', product.id, 'option_set_id =', product.option_set_id, 'simple =', !!simple);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Auth-Token", "value": "{{bc_access_token}}" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{bc_api_url}}/stores/{{store_hash}}/v3/catalog/products?limit=20&is_visible=true&include_fields=id,name,option_set_id",
+              "host": ["{{bc_api_url}}"],
+              "path": ["stores", "{{store_hash}}", "v3", "catalog", "products"],
+              "query": [
+                { "key": "limit", "value": "20" },
+                { "key": "is_visible", "value": "true" },
+                { "key": "include_fields", "value": "id,name,option_set_id" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "1b. Get Product Variants",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "const variant = json.data?.[0];",
+                  "pm.test('Has variant', () => pm.expect(variant).to.be.an('object'));",
+                  "pm.test('Has variant id', () => pm.expect(variant.id).to.be.a('number'));",
+                  "pm.environment.set('variant_id', String(variant.id));",
+                  "console.log('variant_id =', variant.id, 'sku =', variant.sku);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Auth-Token", "value": "{{bc_access_token}}" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{bc_api_url}}/stores/{{store_hash}}/v3/catalog/products/{{product_id}}/variants?limit=1",
+              "host": ["{{bc_api_url}}"],
+              "path": ["stores", "{{store_hash}}", "v3", "catalog", "products", "{{product_id}}", "variants"],
+              "query": [
+                { "key": "limit", "value": "1" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "2. Create Cart",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "const useProductIdOnly = pm.environment.get('use_product_id_only') === 'true';",
+                  "const productId = pm.environment.get('product_id');",
+                  "const variantId = pm.environment.get('variant_id') || pm.collectionVariables.get('variant_id');",
+                  "const channelId = Number(pm.environment.get('channel_id') || pm.collectionVariables.get('channel_id') || 1);",
+                  "let lineItem;",
+                  "if (useProductIdOnly && productId) {",
+                  "  lineItem = { quantity: 1, product_id: Number(productId) };",
+                  "  console.log('Creating cart with product_id =', productId);",
+                  "} else if (variantId && !variantId.includes('{{')) {",
+                  "  lineItem = { quantity: 1, variant_id: Number(variantId) };",
+                  "  console.log('Creating cart with variant_id =', variantId);",
+                  "} else {",
+                  "  throw new Error('No line item id available. Run \"1. Get Products\" then \"1b. Get Product Variants\" first.');",
+                  "}",
+                  "pm.request.body.update({",
+                  "  mode: 'raw',",
+                  "  raw: JSON.stringify({",
+                  "    channel_id: channelId,",
+                  "    line_items: [lineItem],",
+                  "  }, null, 2),",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 201 or 200', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});",
+                  "const json = pm.response.json();",
+                  "const checkoutId = json.data?.id;",
+                  "pm.test('Has checkout_id', () => pm.expect(checkoutId).to.be.a('string'));",
+                  "pm.environment.set('checkout_id', checkoutId);",
+                  "console.log('checkout_id =', checkoutId);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Auth-Token", "value": "{{bc_access_token}}" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"line_items\": [\n    {\n      \"quantity\": 1,\n      \"variant_id\": 0\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{bc_api_url}}/stores/{{store_hash}}/v3/carts",
+              "host": ["{{bc_api_url}}"],
+              "path": ["stores", "{{store_hash}}", "v3", "carts"]
+            }
+          }
+        },
+        {
+          "name": "3. Get Checkout (line items)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "const items = json.data?.cart?.lineItems?.physicalItems || [];",
+                  "pm.test('Has line item', () => pm.expect(items.length).to.be.above(0));",
+                  "pm.environment.set('line_item_id', String(items[0].id));",
+                  "console.log('line_item_id =', items[0].id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Auth-Token", "value": "{{bc_access_token}}" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{bc_api_url}}/stores/{{store_hash}}/v3/checkouts/{{checkout_id}}?include=cart.lineItems.physicalItems,customer",
+              "host": ["{{bc_api_url}}"],
+              "path": ["stores", "{{store_hash}}", "v3", "checkouts", "{{checkout_id}}"],
+              "query": [
+                { "key": "include", "value": "cart.lineItems.physicalItems,customer" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "4. Add Billing Address",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Auth-Token", "value": "{{bc_access_token}}" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Test\",\n  \"last_name\": \"Buyer\",\n  \"email\": \"buyer@example.com\",\n  \"address1\": \"123 Test St\",\n  \"city\": \"Riyadh\",\n  \"state_or_province\": \"Riyadh\",\n  \"country_code\": \"SA\",\n  \"postal_code\": \"12345\",\n  \"phone\": \"+966500000000\"\n}"
+            },
+            "url": {
+              "raw": "{{bc_api_url}}/stores/{{store_hash}}/v3/checkouts/{{checkout_id}}/billing-address",
+              "host": ["{{bc_api_url}}"],
+              "path": ["stores", "{{store_hash}}", "v3", "checkouts", "{{checkout_id}}", "billing-address"]
+            }
+          }
+        },
+        {
+          "name": "5. Add Consignment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200 or 201', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});",
+                  "const json = pm.response.json();",
+                  "const consignment = json.data?.consignments?.[0];",
+                  "if (consignment?.id) {",
+                  "  pm.environment.set('consignment_id', String(consignment.id));",
+                  "}",
+                  "const option = consignment?.available_shipping_options?.[0];",
+                  "if (option?.id) {",
+                  "  pm.environment.set('shipping_option_id', String(option.id));",
+                  "  console.log('shipping_option_id =', option.id, option.description);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Auth-Token", "value": "{{bc_access_token}}" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"shipping_address\": {\n      \"first_name\": \"Test\",\n      \"last_name\": \"Buyer\",\n      \"email\": \"buyer@example.com\",\n      \"address1\": \"123 Test St\",\n      \"city\": \"Riyadh\",\n      \"state_or_province\": \"Riyadh\",\n      \"country_code\": \"SA\",\n      \"postal_code\": \"12345\",\n      \"phone\": \"+966500000000\"\n    },\n    \"line_items\": [\n      {\n        \"item_id\": \"{{line_item_id}}\",\n        \"quantity\": 1\n      }\n    ]\n  }\n]"
+            },
+            "url": {
+              "raw": "{{bc_api_url}}/stores/{{store_hash}}/v3/checkouts/{{checkout_id}}/consignments?include=consignments.available_shipping_options",
+              "host": ["{{bc_api_url}}"],
+              "path": ["stores", "{{store_hash}}", "v3", "checkouts", "{{checkout_id}}", "consignments"],
+              "query": [
+                { "key": "include", "value": "consignments.available_shipping_options" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "5b. Select Shipping Method",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "const consignmentId = pm.environment.get('consignment_id');",
+                  "const shippingOptionId = pm.environment.get('shipping_option_id');",
+                  "if (!consignmentId || !shippingOptionId) {",
+                  "  throw new Error('Run step 5 first to set consignment_id and shipping_option_id.');",
+                  "}",
+                  "pm.request.body.update({",
+                  "  mode: 'raw',",
+                  "  raw: JSON.stringify({ shipping_option_id: shippingOptionId }, null, 2),",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "X-Auth-Token", "value": "{{bc_access_token}}" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shipping_option_id\": \"placeholder\"\n}"
+            },
+            "url": {
+              "raw": "{{bc_api_url}}/stores/{{store_hash}}/v3/checkouts/{{checkout_id}}/consignments/{{consignment_id}}",
+              "host": ["{{bc_api_url}}"],
+              "path": ["stores", "{{store_hash}}", "v3", "checkouts", "{{checkout_id}}", "consignments", "{{consignment_id}}"]
+            }
+          }
+        },
+        {
+          "name": "6. Verify Checkout",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "const data = json.data || {};",
+                  "const total = data.grandTotal ?? data.grand_total ?? data.cart?.cartAmount ?? data.cart?.cart_amount_inc_tax ?? data.cart?.base_amount;",
+                  "const currency = data.currency?.code ?? data.cart?.currency?.code;",
+                  "pm.test('Total > 0', () => pm.expect(Number(total)).to.be.above(0));",
+                  "console.log('total =', total, 'currency =', currency);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Auth-Token", "value": "{{bc_access_token}}" },
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{bc_api_url}}/stores/{{store_hash}}/v3/checkouts/{{checkout_id}}?include=cart.lineItems.physicalItems,customer,consignments.available_shipping_options",
+              "host": ["{{bc_api_url}}"],
+              "path": ["stores", "{{store_hash}}", "v3", "checkouts", "{{checkout_id}}"],
+              "query": [
+                { "key": "include", "value": "cart.lineItems.physicalItems,customer,consignments.available_shipping_options" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tamara App",
+      "item": [
+        {
+          "name": "7. Start Tamara Checkout",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const json = pm.response.json();",
+                  "pm.test('Has checkout_url', () => pm.expect(json.checkout_url).to.be.a('string').and.not.empty);",
+                  "console.log('Tamara checkout_url =', json.checkout_url);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Origin", "value": "{{store_origin}}" },
+              { "key": "X-Store-Hash", "value": "{{store_hash}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"store_hash\": \"{{store_hash}}\",\n  \"checkout_id\": \"{{checkout_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{app_url}}/api/checkout/start",
+              "host": ["{{app_url}}"],
+              "path": ["api", "checkout", "start"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
