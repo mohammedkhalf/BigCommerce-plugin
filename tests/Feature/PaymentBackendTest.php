@@ -233,6 +233,36 @@ class PaymentBackendTest extends TestCase
         $this->assertNotNull($session->authorised_at);
     }
 
+    public function test_tamara_order_captured_webhook_sets_captured_status(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout122',
+            'bc_order_id' => '122', 'tamara_order_id' => 'e7880bf2-b853-41db-a438-5c6b7674e2c5',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'authorised',
+        ]);
+        $jwt = JWT::encode(['iat' => now()->timestamp, 'exp' => now()->addMinute()->timestamp], 'notification-secret-token-32-bytes', 'HS256');
+        $payload = [
+            'order_id' => 'e7880bf2-b853-41db-a438-5c6b7674e2c5',
+            'order_reference_id' => '122',
+            'order_number' => '122',
+            'event_type' => 'order_captured',
+            'data' => [
+                'capture_id' => '7c46bfff-cda7-4a45-bf57-91f9f29f8f84',
+                'captured_amount' => ['amount' => 109.0, 'currency' => 'SAR'],
+            ],
+        ];
+
+        $this->withToken($jwt)->postJson('/webhooks/tamara', $payload)->assertNoContent();
+
+        $session->refresh();
+        $this->assertSame('captured', $session->status->value);
+        $this->assertNotNull($session->captured_at);
+    }
+
     public function test_bigcommerce_webhook_dispatches_capture_once(): void
     {
         Queue::fake();
