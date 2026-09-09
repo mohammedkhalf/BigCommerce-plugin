@@ -21,7 +21,7 @@ export default function PaymentStatusBadge({ status }: { status?: string }) {
         pending: 'Pending',
         declined: 'Declined',
         cancelled: 'Cancelled',
-        captured: 'Captured',
+        captured: 'Full captured',
         refunded: 'Refunded',
     };
     const variant = variants[normalized as keyof typeof variants] ?? 'secondary';

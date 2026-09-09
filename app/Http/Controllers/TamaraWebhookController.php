@@ -37,7 +37,7 @@ final readonly class TamaraWebhookController
         if ($event->wasRecentlyCreated) {
             match ($event->event_type) {
                 'order_approved' => AuthoriseTamaraOrder::dispatch($event->id),
-                'order_authorised', 'order_authorized' => $this->syncStatus($session, $event, PaymentSessionStatus::Authorised),
+                'order_authorised' => $this->syncStatus($session, $event, PaymentSessionStatus::Authorised),
                 'order_declined' => $this->syncStatus($session, $event, PaymentSessionStatus::Declined, failed: true),
                 'order_expired' => $this->syncStatus($session, $event, PaymentSessionStatus::Expired, failed: true),
                 'order_canceled', 'order_cancelled' => $this->syncStatus($session, $event, PaymentSessionStatus::Cancelled),

@@ -27,12 +27,42 @@ final class BigCommerceWebhookController
             ],
         );
         if ($event->wasRecentlyCreated) {
-            str_contains($event->event_type, 'refund')
-                ? RefundTamaraPayment::dispatch($event->id)
-                : CaptureTamaraPayment::dispatch($event->id);
+            $this->dispatchJob($event);
         }
 
         return response()->noContent();
+    }
+
+    private function dispatchJob(WebhookEvent $event): void
+    {
+        if (str_contains($event->event_type, 'refund')) {
+            RefundTamaraPayment::dispatch($event->id);
+
+            return;
+        }
+
+        if ($this->shouldCapture($event)) {
+            CaptureTamaraPayment::dispatch($event->id);
+
+            return;
+        }
+
+        $event->update(['processing_status' => 'ignored', 'processed_at' => now()]);
+    }
+
+    private function shouldCapture(WebhookEvent $event): bool
+    {
+        if ($event->event_type === 'store/shipment/created') {
+            return true;
+        }
+
+        if ($event->event_type !== 'store/order/statusUpdated') {
+            return false;
+        }
+
+        $newStatusId = (int) data_get($event->payload, 'data.status.new_status_id');
+
+        return $newStatusId === (int) config('bigcommerce.shipped_status_id', 2);
     }
 
     private function verifySignature(Request $request, Store $store): void

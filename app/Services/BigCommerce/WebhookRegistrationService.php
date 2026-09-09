@@ -10,7 +10,7 @@ final readonly class WebhookRegistrationService
 
     public function provision(Store $store): void
     {
-        foreach (['store/shipment/created', 'store/order/refund/created'] as $scope) {
+        foreach (['store/shipment/created', 'store/order/statusUpdated', 'store/order/refund/created'] as $scope) {
             if ($store->registeredResources()->where('scope', $scope)->exists()) {
                 continue;
             }

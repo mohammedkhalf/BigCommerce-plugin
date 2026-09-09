@@ -7,8 +7,10 @@ use App\Enums\WebhookSource;
 use App\Models\PaymentSession;
 use App\Models\WebhookEvent;
 use App\Services\Tamara\TamaraOrderService;
+use App\Support\TamaraMoney;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Carbon;
 use Throwable;
 
 final class CaptureTamaraPayment implements ShouldQueue
@@ -26,7 +28,7 @@ final class CaptureTamaraPayment implements ShouldQueue
 
     public function handle(TamaraOrderService $orders): void
     {
-        $event = WebhookEvent::query()->with('paymentSession')->findOrFail($this->eventId);
+        $event = WebhookEvent::query()->with('paymentSession.store.tamaraConfig')->findOrFail($this->eventId);
         if ($event->processed_at) {
             return;
         }
@@ -38,12 +40,36 @@ final class CaptureTamaraPayment implements ShouldQueue
             return;
         }
 
+        if ($session->captured_at || $session->status === PaymentSessionStatus::Captured) {
+            $event->update([
+                'payment_session_id' => $session->id,
+                'processing_status' => 'processed',
+                'processed_at' => now(),
+            ]);
+
+            return;
+        }
+
+        if ($session->status !== PaymentSessionStatus::Authorised) {
+            if ($session->status === PaymentSessionStatus::Approved) {
+                $this->release(60);
+
+                return;
+            }
+
+            $event->update([
+                'payment_session_id' => $session->id,
+                'processing_status' => 'ignored',
+                'processed_at' => now(),
+                'last_error' => 'Capture requires an authorised payment.',
+            ]);
+
+            return;
+        }
+
         try {
             if (! $session->captured_at) {
-                $orders->capture($session->store, $session->tamara_order_id, [
-                    'total_amount' => ['amount' => $session->amount, 'currency' => $session->currency],
-                    'shipping_info' => data_get($event->payload, 'data', []),
-                ]);
+                $orders->capture($session->store, $session->tamara_order_id, $this->capturePayload($session, $event));
                 $session->update([
                     'status' => PaymentSessionStatus::Captured,
                     'captured_at' => now(),
@@ -62,6 +88,47 @@ final class CaptureTamaraPayment implements ShouldQueue
             ]);
             throw $e;
         }
+    }
+
+    private function capturePayload(PaymentSession $session, WebhookEvent $event): array
+    {
+        return [
+            'total_amount' => $this->captureAmount($session),
+            'shipping_info' => $this->shippingInfo($event, $session),
+        ];
+    }
+
+    private function captureAmount(PaymentSession $session): array
+    {
+        $snapshot = $session->tamara_snapshot ?? [];
+        $amount = data_get($snapshot, 'authorized_amount.amount')
+            ?? data_get($snapshot, 'total_amount.amount')
+            ?? $session->amount;
+
+        return TamaraMoney::format($amount, $session->currency);
+    }
+
+    private function shippingInfo(WebhookEvent $event, PaymentSession $session): array
+    {
+        $data = data_get($event->payload, 'data', []);
+        $shippedAt = data_get($data, 'date_created')
+            ?? data_get($data, 'shipped_at')
+            ?? now()->toIso8601String();
+
+        return [
+            'shipped_at' => Carbon::parse($shippedAt)->toIso8601String(),
+            'shipping_company' => (string) (
+                data_get($data, 'shipping_provider')
+                ?? data_get($data, 'shipping_method')
+                ?? data_get($data, 'shipping_company')
+                ?? 'BigCommerce'
+            ),
+            'tracking_number' => (string) (
+                data_get($data, 'tracking_number')
+                ?? data_get($data, 'tracking_id')
+                ?? $session->bc_order_id
+            ),
+        ];
     }
 
     private function syncTamaraCapture(PaymentSession $session, WebhookEvent $event): void
@@ -101,9 +168,11 @@ final class CaptureTamaraPayment implements ShouldQueue
         }
 
         $orderId = data_get($event->payload, 'data.order_id')
+            ?? data_get($event->payload, 'data.id')
             ?? data_get($event->payload, 'order_reference_id');
 
         return PaymentSession::query()
+            ->with('store.tamaraConfig')
             ->where('store_id', $event->store_id)
             ->where('bc_order_id', (string) $orderId)
             ->firstOrFail();
