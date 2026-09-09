@@ -43,10 +43,26 @@ final readonly class TamaraSettingsController
     {
         $config = $this->context($request)->store->tamaraConfig;
         abort_unless($config && filled($config->api_token), 422, 'Tamara credentials are not configured.');
-        $this->client->request($config->store, 'GET', 'merchants');
+        $currency = strtoupper((string) ($config->currency_allowlist[0] ?? 'SAR'));
+        $this->client->request($config->store, 'GET', 'checkout/payment-types', [
+            'country' => $this->countryForCurrency($currency),
+            'currency' => $currency,
+        ]);
         $config->update(['last_tested_at' => now()]);
 
         return response()->json(['ok' => true]);
+    }
+
+    private function countryForCurrency(string $currency): string
+    {
+        return match ($currency) {
+            'AED' => 'AE',
+            'KWD' => 'KW',
+            'BHD' => 'BH',
+            'QAR' => 'QA',
+            'OMR' => 'OM',
+            default => 'SA',
+        };
     }
 
     public function enable(Request $request): JsonResponse

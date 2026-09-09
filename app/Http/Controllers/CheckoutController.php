@@ -82,7 +82,6 @@ final readonly class CheckoutController
             ]);
         }
 
-
         $allowlist = $store->tamaraConfig->currency_allowlist ?? [];
         if ($allowlist && ! in_array($currency, $allowlist, true)) {
             throw ValidationException::withMessages(['checkout_id' => 'Tamara is not enabled for this currency.']);
@@ -90,8 +89,6 @@ final readonly class CheckoutController
 
         $token = $this->bigCommerce->createToken($store, $input['checkout_id']);
         $order = $this->bigCommerce->createOrder($store, $input['checkout_id']);
-
-
 
         $orderData = $order['data'] ?? $order;
         $orderId = (string) ($orderData['id'] ?? $orderData['orderId'] ?? '');
@@ -108,6 +105,7 @@ final readonly class CheckoutController
                 'expires_at' => now()->addHour(),
             ],
         ));
+
         if (! $session->wasRecentlyCreated && filled($session->tamara_snapshot['checkout_url'] ?? null)) {
             return response()->json(['checkout_url' => $session->tamara_snapshot['checkout_url']])->withHeaders($this->corsHeaders($request));
         }
@@ -132,7 +130,22 @@ final readonly class CheckoutController
         if ($result !== 'success' || ! in_array($status, ['approved', 'authorised', 'authorized', 'fully_captured'], true)) {
             return redirect()->away($session->store->metadata['secure_url'] ?? '/');
         }
-        $session->update(['status' => PaymentSessionStatus::Approved, 'tamara_snapshot' => $details]);
+
+        $nextStatus = in_array($status, ['authorised', 'authorized'], true)
+            ? PaymentSessionStatus::Authorised
+            : PaymentSessionStatus::Approved;
+
+        if ($session->status !== PaymentSessionStatus::Completed) {
+            $session->update([
+                'status' => $nextStatus,
+                'authorised_at' => $nextStatus === PaymentSessionStatus::Authorised
+                    ? ($session->authorised_at ?? now())
+                    : $session->authorised_at,
+                'tamara_snapshot' => $details,
+            ]);
+        } else {
+            $session->update(['tamara_snapshot' => $details]);
+        }
         $base = rtrim((string) ($session->store->metadata['secure_url'] ?? ''), '/');
 
         return redirect()->away("{$base}/checkout/order-confirmation/{$session->bc_order_id}?t=".urlencode($session->checkout_token));
@@ -151,7 +164,7 @@ final readonly class CheckoutController
         return [
             'order_reference_id' => $session->bc_order_id,
             'order_number' => $session->bc_order_id,
-            'total_amount' => ['amount' => $session->amount, 'currency' => $session->currency],
+            'total_amount' => $this->money($session->amount, $session->currency),
             'description' => 'BigCommerce order '.$session->bc_order_id,
             'country_code' => $this->pick($address, 'countryCode', 'country_code', 'SA'),
             'payment_type' => 'PAY_BY_INSTALMENTS',
@@ -165,6 +178,8 @@ final readonly class CheckoutController
             ],
             'billing_address' => $this->address($address),
             'shipping_address' => $this->address($address),
+            'tax_amount' => $this->money($this->checkoutTaxAmount($checkout), $session->currency),
+            'shipping_amount' => $this->money($this->checkoutShippingAmount($checkout), $session->currency),
             'merchant_url' => [
                 'success' => $return('success'), 'failure' => $return('failure'),
                 'cancel' => $return('cancel'), 'notification' => route('webhooks.tamara'),
@@ -185,14 +200,14 @@ final readonly class CheckoutController
             'reference_id' => (string) ($this->pick($item, 'productId', 'product_id') ?: $item['id']),
             'type' => 'Physical', 'name' => $item['name'] ?? 'Item',
             'sku' => $item['sku'] ?? '', 'quantity' => $item['quantity'] ?? 1,
-            'unit_price' => [
-                'amount' => $this->pick($item, 'salePrice', 'sale_price', $this->pick($item, 'listPrice', 'list_price', 0)),
-                'currency' => $currency,
-            ],
-            'total_amount' => [
-                'amount' => $this->pick($item, 'extendedSalePrice', 'extended_sale_price', 0),
-                'currency' => $currency,
-            ],
+            'unit_price' => $this->money(
+                $this->pick($item, 'salePrice', 'sale_price', $this->pick($item, 'listPrice', 'list_price', 0)),
+                $currency,
+            ),
+            'total_amount' => $this->money(
+                $this->pick($item, 'extendedSalePrice', 'extended_sale_price', 0),
+                $currency,
+            ),
         ])->values()->all();
     }
 
@@ -233,6 +248,32 @@ final readonly class CheckoutController
         return $data[$camel] ?? $data[$snake] ?? $default;
     }
 
+    private function money(float|int|string $amount, string $currency): array
+    {
+        return ['amount' => round((float) $amount, 2), 'currency' => $currency];
+    }
+
+    private function checkoutTaxAmount(array $checkout): float
+    {
+        return (float) ($checkout['tax_total'] ?? $checkout['taxTotal'] ?? 0);
+    }
+
+    private function checkoutShippingAmount(array $checkout): float
+    {
+        $shipping = 0.0;
+        foreach ($checkout['consignments'] ?? [] as $consignment) {
+            $shipping += (float) (
+                $consignment['shipping_cost_inc_tax']
+                ?? $consignment['shippingCostIncTax']
+                ?? $consignment['shipping_cost_ex_tax']
+                ?? $consignment['shippingCostExTax']
+                ?? 0
+            );
+        }
+
+        return $shipping;
+    }
+
     private function resolveCheckoutCurrency(array $checkout, ?string $storeCurrency): ?string
     {
         $cartCurrency = $checkout['cart']['currency'] ?? null;
@@ -256,13 +297,18 @@ final readonly class CheckoutController
     private function assertOrigin(Request $request, Store $store): void
     {
         $origin = $request->headers->get('Origin');
-        $allowed = parse_url((string) ($store->metadata['secure_url'] ?? ''), PHP_URL_HOST);
+        $secureUrl = (string) ($store->metadata['secure_url'] ?? '');
+        $allowed = parse_url($secureUrl, PHP_URL_HOST);
+        $originHost = $origin ? parse_url($origin, PHP_URL_HOST) : null;
+
         abort_unless(
-            $origin
+            $originHost
             && $allowed
-            && hash_equals(strtolower($allowed), strtolower((string) parse_url($origin, PHP_URL_HOST))),
+            && hash_equals(strtolower($allowed), strtolower((string) $originHost)),
             403,
-            'Origin is not allowed.',
+            $secureUrl === ''
+                ? 'Origin is not allowed. Store secure_url is not configured yet.'
+                : "Origin is not allowed. Set the Origin header to {$secureUrl}",
         );
     }
 

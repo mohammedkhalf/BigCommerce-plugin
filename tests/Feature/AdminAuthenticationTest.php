@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\PaymentSession;
 use App\Models\Store;
 use App\Models\StoreUser;
 use App\Services\Auth\AppSessionJwt;
@@ -49,5 +50,44 @@ class AdminAuthenticationTest extends TestCase
             ->get('/payments');
 
         $response->assertOk();
+    }
+
+    public function test_payments_page_includes_customer_from_checkout_snapshot(): void
+    {
+        $store = Store::query()->create([
+            'store_hash' => 'abc123',
+            'access_token' => 'bc-secret',
+            'currency' => 'SAR',
+            'installed_at' => now(),
+        ]);
+        $user = StoreUser::query()->create([
+            'store_id' => $store->id,
+            'bigcommerce_user_id' => 10,
+            'email' => 'owner@example.com',
+            'is_active' => true,
+        ]);
+        PaymentSession::query()->create([
+            'store_id' => $store->id,
+            'bc_checkout_id' => 'checkout123',
+            'bc_order_id' => '117',
+            'amount' => 109,
+            'currency' => 'SAR',
+            'bc_snapshot' => [
+                'billing_address' => [
+                    'first_name' => 'Sara',
+                    'last_name' => 'Ibrahim',
+                    'email' => 'sara@example.com',
+                ],
+            ],
+        ]);
+        $token = app(AppSessionJwt::class)->issue($store, $user);
+
+        $this->withCookie('tamara_app_session', $token)
+            ->get('/payments')
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->component('Payments/Index')
+                ->has('payments.data', 1)
+                ->where('payments.data.0.customer', 'Sara Ibrahim'));
     }
 }

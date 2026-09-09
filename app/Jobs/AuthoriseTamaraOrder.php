@@ -37,7 +37,6 @@ final class AuthoriseTamaraOrder implements ShouldQueue
                     'authorised_at' => now(), 'tamara_snapshot' => $details,
                 ]);
             }
-            MarkBigCommerceOrderPaid::dispatch($session->id, $event->id);
         } catch (Throwable $e) {
             $event->update(['processing_status' => 'failed', 'last_error' => mb_substr($e->getMessage(), 0, 2000), 'attempts' => $event->attempts + 1]);
             throw $e;

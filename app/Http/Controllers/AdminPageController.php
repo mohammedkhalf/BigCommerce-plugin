@@ -15,8 +15,8 @@ final class AdminPageController
         $context = $this->context($request);
         $payments = $context->store->paymentSessions()->latest()->limit(5)->get();
         $attempts = $context->store->paymentSessions()->count();
-        $approved = $context->store->paymentSessions()->whereIn('status', ['approved', 'completed'])->count();
-        $volume = $context->store->paymentSessions()->whereIn('status', ['approved', 'completed'])->sum('amount');
+        $approved = $context->store->paymentSessions()->whereIn('status', ['approved', 'authorised', 'completed'])->count();
+        $volume = $context->store->paymentSessions()->whereIn('status', ['approved', 'authorised', 'completed'])->sum('amount');
 
         return Inertia::render('Dashboard', $this->shared($request) + [
             'connected' => $context->store->tamaraConfig()->exists(),
@@ -113,6 +113,7 @@ final class AdminPageController
         return [
             'id' => $payment->id,
             'orderId' => $payment->bc_order_id,
+            'customer' => $payment->customerDisplayName(),
             'amount' => (float) $payment->amount,
             'currency' => $payment->currency,
             'status' => $payment->status->value,

@@ -45,4 +45,56 @@ class PaymentSession extends Model
     {
         return $this->hasMany(WebhookEvent::class);
     }
+
+    public function customerDisplayName(): ?string
+    {
+        $snapshot = $this->bc_snapshot ?? [];
+        if ($snapshot !== []) {
+            $customer = $snapshot['customer'] ?? [];
+            $address = $snapshot['billingAddress']
+                ?? $snapshot['billing_address']
+                ?? $snapshot['consignments'][0]['shippingAddress']
+                ?? $snapshot['consignments'][0]['shipping_address']
+                ?? [];
+
+            $first = $this->pick($customer, 'firstName', 'first_name')
+                ?: $this->pick($address, 'firstName', 'first_name');
+            $last = $this->pick($customer, 'lastName', 'last_name')
+                ?: $this->pick($address, 'lastName', 'last_name');
+            $name = trim("{$first} {$last}");
+            if ($name !== '') {
+                return $name;
+            }
+
+            $email = $this->pick($customer, 'email', 'email')
+                ?: $this->pick($address, 'email', 'email');
+            if (filled($email)) {
+                return $email;
+            }
+        }
+
+        $consumer = $this->tamara_snapshot['consumer'] ?? null;
+        if (is_array($consumer)) {
+            $name = trim(
+                $this->pick($consumer, 'first_name', 'firstName').' '.
+                $this->pick($consumer, 'last_name', 'lastName'),
+            );
+            if ($name !== '') {
+                return $name;
+            }
+        }
+
+        return null;
+    }
+
+    private function pick(array $data, string ...$keys): string
+    {
+        foreach ($keys as $key) {
+            if (filled($data[$key] ?? null)) {
+                return (string) $data[$key];
+            }
+        }
+
+        return '';
+    }
 }

@@ -69,6 +69,9 @@ final readonly class TamaraWebhookController
     ): void {
         $session->update([
             'status' => $status,
+            'authorised_at' => $status === PaymentSessionStatus::Authorised
+                ? ($session->authorised_at ?? now())
+                : $session->authorised_at,
             'failed_at' => $failed ? now() : $session->failed_at,
             'cancelled_at' => $status === PaymentSessionStatus::Cancelled ? now() : $session->cancelled_at,
             'captured_at' => $status === PaymentSessionStatus::Captured ? now() : $session->captured_at,

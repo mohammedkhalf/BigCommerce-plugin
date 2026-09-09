@@ -84,6 +84,11 @@ class PaymentBackendTest extends TestCase
         $this->withHeaders(['Origin' => 'https://shop.example', 'X-Store-Hash' => 'abc123'])
             ->postJson('/api/checkout/start', ['store_hash' => 'abc123', 'checkout_id' => 'checkout123'])
             ->assertOk()->assertJson(['checkout_url' => 'https://checkout.tamara.test/1']);
+
+        Http::assertSent(fn ($request) => $request->url() === 'https://api-sandbox.tamara.test/checkout'
+            && ($request['tax_amount'] ?? null) === ['amount' => 0.0, 'currency' => 'SAR']
+            && ($request['shipping_amount'] ?? null) === ['amount' => 0.0, 'currency' => 'SAR']);
+
         $this->assertDatabaseHas('payment_sessions', ['bc_order_id' => '1234', 'amount' => 150, 'currency' => 'SAR']);
     }
 
@@ -199,6 +204,33 @@ class PaymentBackendTest extends TestCase
 
         $this->assertDatabaseCount('webhook_events', 1);
         Queue::assertPushed(AuthoriseTamaraOrder::class, 1);
+    }
+
+    public function test_tamara_order_authorised_webhook_sets_authorised_status(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout119',
+            'bc_order_id' => '119', 'tamara_order_id' => '7a4f79a9-6f8a-4260-9607-845eba8c37c4',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'approved',
+        ]);
+        $jwt = JWT::encode(['iat' => now()->timestamp, 'exp' => now()->addMinute()->timestamp], 'notification-secret-token-32-bytes', 'HS256');
+        $payload = [
+            'order_id' => '7a4f79a9-6f8a-4260-9607-845eba8c37c4',
+            'order_reference_id' => '119',
+            'order_number' => '119',
+            'event_type' => 'order_authorised',
+            'data' => [],
+        ];
+
+        $this->withToken($jwt)->postJson('/webhooks/tamara', $payload)->assertNoContent();
+
+        $session->refresh();
+        $this->assertSame('authorised', $session->status->value);
+        $this->assertNotNull($session->authorised_at);
     }
 
     public function test_bigcommerce_webhook_dispatches_capture_once(): void

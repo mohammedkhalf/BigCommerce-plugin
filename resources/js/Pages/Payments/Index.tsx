@@ -26,7 +26,7 @@ export default function PaymentsIndex({ payments: result }: { payments?: Paginat
     const visit = (url: string) => router.visit(url, { headers: authorizationHeaders() });
     const filtered = payments.filter((payment) => {
         const matchesQuery = `${payment.id} ${payment.orderId ?? ''} ${payment.customer ?? ''}`.toLowerCase().includes(query.toLowerCase());
-        return matchesQuery && (status === 'all' || payment.status.toLowerCase() === status);
+        return matchesQuery && (status === 'all' || payment.status.toLowerCase() === status || (status === 'authorized' && payment.status.toLowerCase() === 'authorised'));
     });
     const columns = useMemo<TableColumn<Payment>[]>(() => [
         { header: 'Order', hash: 'order', render: (item) => <button className="table-link" onClick={() => visit(`/payments/${item.id}`)}>#{item.orderId ?? item.id}</button> },
@@ -45,6 +45,7 @@ export default function PaymentsIndex({ payments: result }: { payments?: Paginat
                     <Input aria-label="Search payments" onChange={(event) => setQuery(event.target.value)} placeholder="Search order, payment or customer" value={query} />
                     <select aria-label="Filter payment status" onChange={(event) => setStatus(event.target.value)} value={status}>
                         <option value="all">All statuses</option>
+                        <option value="authorized">Authorized</option>
                         <option value="approved">Approved</option>
                         <option value="pending">Pending</option>
                         <option value="declined">Declined</option>

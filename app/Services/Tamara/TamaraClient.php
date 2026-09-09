@@ -23,6 +23,17 @@ final class TamaraClient
         $response = $this->http($config->api_token)->send($method, rtrim($base, '/').'/'.ltrim($path, '/'), [
             strtoupper($method) === 'GET' ? 'query' : 'json' => $data,
         ]);
+
+
+        if ($response->status() === 404 && str_contains((string) $response->body(), 'Merchant is not found')) {
+            $environment = $config->mode->value === 'production' ? 'live' : 'sandbox';
+            throw new RuntimeException(
+                "Tamara returned \"Merchant is not found\" on the {$environment} API. "
+                .'Use sandbox credentials with environment Sandbox, or production credentials with environment Live. '
+                .'Generate tokens from Tamara Partners Portal for the matching environment.',
+            );
+        }
+
         $response->throw();
 
         return $response->json() ?? [];
