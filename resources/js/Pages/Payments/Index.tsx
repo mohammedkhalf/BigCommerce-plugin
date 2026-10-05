@@ -26,7 +26,12 @@ export default function PaymentsIndex({ payments: result }: { payments?: Paginat
     const visit = (url: string) => router.visit(url, { headers: authorizationHeaders() });
     const filtered = payments.filter((payment) => {
         const matchesQuery = `${payment.id} ${payment.orderId ?? ''} ${payment.customer ?? ''}`.toLowerCase().includes(query.toLowerCase());
-        return matchesQuery && (status === 'all' || payment.status.toLowerCase() === status || (status === 'authorized' && payment.status.toLowerCase() === 'authorised'));
+        const paymentStatus = payment.status.toLowerCase();
+        const matchesStatus = status === 'all'
+            || paymentStatus === status
+            || (status === 'authorized' && paymentStatus === 'authorised')
+            || (status === 'cancelled' && paymentStatus === 'canceled');
+        return matchesQuery && matchesStatus;
     });
     const columns = useMemo<TableColumn<Payment>[]>(() => [
         { header: 'Order', hash: 'order', render: (item) => <button className="table-link" onClick={() => visit(`/payments/${item.id}`)}>#{item.orderId ?? item.id}</button> },
@@ -49,6 +54,8 @@ export default function PaymentsIndex({ payments: result }: { payments?: Paginat
                         <option value="approved">Approved</option>
                         <option value="pending">Pending</option>
                         <option value="declined">Declined</option>
+                        <option value="cancelled">Cancelled</option>
+                        <option value="expired">Expired</option>
                         <option value="refunded">Refunded</option>
                     </select>
                 </div>

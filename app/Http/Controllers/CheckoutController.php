@@ -7,6 +7,7 @@ use App\Support\TamaraOrderStatus;
 use App\Models\PaymentSession;
 use App\Models\Store;
 use App\Services\BigCommerce\CheckoutService;
+use App\Services\BigCommerce\StoreInfoService;
 use App\Services\Tamara\TamaraCheckoutService;
 use App\Services\Tamara\TamaraOrderService;
 use App\Support\BigCommerceScopes;
@@ -16,11 +17,13 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 final readonly class CheckoutController
 {
     public function __construct(
         private CheckoutService $bigCommerce,
+        private StoreInfoService $storeInfo,
         private TamaraCheckoutService $tamara,
         private TamaraOrderService $orders,
     ) {}
@@ -28,6 +31,7 @@ final readonly class CheckoutController
     public function options(Request $request): Response
     {
         $store = Store::query()->where('store_hash', $request->header('X-Store-Hash'))->firstOrFail();
+        $this->ensureStoreMetadata($store);
         $this->assertOrigin($request, $store);
 
         return response('', 204, $this->corsHeaders($request));
@@ -39,11 +43,7 @@ final readonly class CheckoutController
             'store_hash' => ['required', 'string', 'regex:/^[a-z0-9]{2,32}$/i'],
             'checkout_id' => ['required', 'string', 'regex:/^[a-z0-9_-]{6,128}$/i'],
         ]);
-        $store = Store::query()->where('store_hash', $input['store_hash'])
-            ->whereNull('uninstalled_at')->whereNotNull('access_token')
-            ->whereHas('tamaraConfig', fn ($query) => $query->where('enabled', true))
-            ->firstOrFail();
-        $this->assertOrigin($request, $store);
+        $store = $this->resolveCheckoutStore($request, $input['store_hash']);
 
         $missingScopes = BigCommerceScopes::missingForCheckout($store);
         if ($missingScopes !== []) {
@@ -318,20 +318,57 @@ final readonly class CheckoutController
         return null;
     }
 
+    private function resolveCheckoutStore(Request $request, string $storeHash): Store
+    {
+        $store = Store::query()->where('store_hash', $storeHash)->first();
+        abort_unless($store, 404, 'Store was not found for this store hash.');
+        abort_unless($store->uninstalled_at === null, 410, 'This store has uninstalled the app. Reinstall it, then try checkout again.');
+        abort_unless(filled($store->access_token), 503, 'This store is missing a BigCommerce access token. Reinstall the app.');
+        abort_unless(
+            $store->tamaraConfig?->enabled,
+            403,
+            'Tamara is configured but not enabled for this store. Open the app settings in BigCommerce and enable Tamara.',
+        );
+        $this->ensureStoreMetadata($store);
+        $this->assertOrigin($request, $store);
+
+        return $store;
+    }
+
+    private function ensureStoreMetadata(Store $store): void
+    {
+        if ($this->storeSecureUrl($store) !== '') {
+            return;
+        }
+
+        try {
+            $this->storeInfo->sync($store);
+        } catch (Throwable) {
+        }
+    }
+
+    private function storeSecureUrl(Store $store): string
+    {
+        $metadata = $store->metadata ?? [];
+
+        return (string) ($metadata['secure_url'] ?? $metadata['domain'] ?? '');
+    }
+
     private function assertOrigin(Request $request, Store $store): void
     {
         $origin = $request->headers->get('Origin');
-        $secureUrl = (string) ($store->metadata['secure_url'] ?? '');
-        $allowed = parse_url($secureUrl, PHP_URL_HOST);
+        $secureUrl = $this->storeSecureUrl($store);
+        $allowed = parse_url($secureUrl, PHP_URL_HOST)
+            ?: (filter_var($secureUrl, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) ? $secureUrl : null);
         $originHost = $origin ? parse_url($origin, PHP_URL_HOST) : null;
 
         abort_unless(
             $originHost
             && $allowed
-            && hash_equals(strtolower($allowed), strtolower((string) $originHost)),
+            && hash_equals(strtolower((string) $allowed), strtolower((string) $originHost)),
             403,
             $secureUrl === ''
-                ? 'Origin is not allowed. Store secure_url is not configured yet.'
+                ? 'Origin is not allowed. Store secure_url is not configured yet. Open the app in BigCommerce so store metadata can sync, or reinstall the app.'
                 : "Origin is not allowed. Set the Origin header to {$secureUrl}",
         );
     }

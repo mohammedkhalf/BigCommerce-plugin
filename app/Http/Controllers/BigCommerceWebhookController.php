@@ -2,15 +2,19 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\CancelTamaraOrder;
 use App\Jobs\CaptureTamaraPayment;
 use App\Jobs\RefundTamaraPayment;
 use App\Models\Store;
 use App\Models\WebhookEvent;
+use App\Services\BigCommerce\OrderWebhookService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 
-final class BigCommerceWebhookController
+final readonly class BigCommerceWebhookController
 {
+    public function __construct(private OrderWebhookService $orderWebhooks) {}
+
     public function __invoke(Request $request): Response
     {
         $payload = $request->json()->all();
@@ -27,60 +31,33 @@ final class BigCommerceWebhookController
             ],
         );
         if ($event->wasRecentlyCreated) {
-            $this->dispatchJob($event);
+            $this->dispatchJob($event, $store);
         }
 
         return response()->noContent();
     }
 
-    private function dispatchJob(WebhookEvent $event): void
+    private function dispatchJob(WebhookEvent $event, Store $store): void
     {
-        if ($this->shouldRefund($event)) {
+        if ($this->orderWebhooks->shouldRefund($event, $store)) {
             RefundTamaraPayment::dispatch($event->id);
 
             return;
         }
 
-        if ($this->shouldCapture($event)) {
+        if ($this->orderWebhooks->shouldCapture($event, $store)) {
             CaptureTamaraPayment::dispatch($event->id);
 
             return;
         }
 
+        if ($this->orderWebhooks->shouldCancel($event, $store)) {
+            CancelTamaraOrder::dispatch($event->id);
+
+            return;
+        }
+
         $event->update(['processing_status' => 'ignored', 'processed_at' => now()]);
-    }
-
-    private function shouldRefund(WebhookEvent $event): bool
-    {
-        if ($event->event_type === 'store/order/refund/created') {
-            return true;
-        }
-
-        if ($event->event_type !== 'store/order/statusUpdated') {
-            return false;
-        }
-
-        $newStatusId = (int) data_get($event->payload, 'data.status.new_status_id');
-
-        return in_array($newStatusId, [
-            (int) config('bigcommerce.refunded_status_id', 4),
-            (int) config('bigcommerce.partially_refunded_status_id', 14),
-        ], true);
-    }
-
-    private function shouldCapture(WebhookEvent $event): bool
-    {
-        if ($event->event_type === 'store/shipment/created') {
-            return true;
-        }
-
-        if ($event->event_type !== 'store/order/statusUpdated') {
-            return false;
-        }
-
-        $newStatusId = (int) data_get($event->payload, 'data.status.new_status_id');
-
-        return $newStatusId === (int) config('bigcommerce.shipped_status_id', 2);
     }
 
     private function verifySignature(Request $request, Store $store): void

@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\WebhookSource;
 use App\Jobs\AuthoriseTamaraOrder;
+use App\Jobs\CancelTamaraOrder;
 use App\Jobs\CaptureTamaraPayment;
 use App\Jobs\RefundTamaraPayment;
 use App\Models\PaymentSession;
@@ -173,6 +174,52 @@ class PaymentBackendTest extends TestCase
         $this->assertDatabaseHas('payment_sessions', ['bc_order_id' => '1234', 'amount' => 109, 'currency' => 'SAR']);
     }
 
+    public function test_checkout_start_syncs_missing_secure_url_before_origin_check(): void
+    {
+        $this->store->update(['metadata' => null]);
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $this->store->update(['scopes' => ['store_checkout', 'store_v2_orders']]);
+        Http::fake([
+            'https://api.bigcommerce.test/stores/abc123/v2/store' => Http::response([
+                'secure_url' => 'https://shop.example',
+                'name' => 'Shop Example',
+                'currency' => 'SAR',
+            ]),
+            'https://api.bigcommerce.test/stores/abc123/v3/checkouts/checkout123/orders' => Http::response(['data' => ['id' => 1234]]),
+            'https://api.bigcommerce.test/stores/abc123/v3/checkouts/checkout123*' => Http::response(['data' => [
+                'grandTotal' => 150, 'currency' => ['code' => 'SAR'], 'cart' => ['lineItems' => []],
+                'customer' => ['email' => 'buyer@example.com'], 'billingAddress' => ['countryCode' => 'SA'],
+            ]]),
+            'https://api.bigcommerce.test/stores/abc123/v3/checkouts/checkout123/token' => Http::response(['data' => ['checkoutToken' => 'checkout-token']]),
+            'https://api-sandbox.tamara.test/checkout' => Http::response([
+                'order_id' => 'tamara-1', 'checkout_id' => 'tc-1', 'checkout_url' => 'https://checkout.tamara.test/1',
+            ]),
+        ]);
+
+        $this->withHeaders(['Origin' => 'https://shop.example', 'X-Store-Hash' => 'abc123'])
+            ->postJson('/api/checkout/start', ['store_hash' => 'abc123', 'checkout_id' => 'checkout123'])
+            ->assertOk()->assertJson(['checkout_url' => 'https://checkout.tamara.test/1']);
+
+        $this->store->refresh();
+        $this->assertSame('https://shop.example', $this->store->metadata['secure_url'] ?? null);
+    }
+
+    public function test_checkout_start_rejects_disabled_tamara_config(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => false, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+
+        $this->withHeaders(['Origin' => 'https://shop.example', 'X-Store-Hash' => 'abc123'])
+            ->postJson('/api/checkout/start', ['store_hash' => 'abc123', 'checkout_id' => 'checkout123'])
+            ->assertForbidden()
+            ->assertJsonFragment(['message' => 'Tamara is configured but not enabled for this store. Open the app settings in BigCommerce and enable Tamara.']);
+    }
+
     public function test_checkout_start_rejects_missing_bigcommerce_checkout_scope(): void
     {
         $this->store->tamaraConfig()->create([
@@ -307,6 +354,48 @@ class PaymentBackendTest extends TestCase
         $this->withHeaders($headers)->postJson('/webhooks/bigcommerce', $payload)->assertNoContent();
 
         $this->assertDatabaseCount('webhook_events', 1);
+        Queue::assertPushed(CaptureTamaraPayment::class, 1);
+    }
+
+    public function test_bigcommerce_status_updated_without_status_object_fetches_order_and_dispatches_capture(): void
+    {
+        Queue::fake();
+        Http::fake([
+            'https://api.bigcommerce.test/stores/abc123/v2/orders/127' => Http::response(['status_id' => 2]),
+        ]);
+        $payload = [
+            'scope' => 'store/order/statusUpdated',
+            'producer' => 'stores/abc123',
+            'hash' => 'bc-minimal-status',
+            'data' => ['type' => 'order', 'id' => 127],
+        ];
+        $headers = [
+            'X-Tamara-Webhook-Token' => hash_hmac('sha256', 'abc123', (string) config('bigcommerce.client_secret')),
+        ];
+
+        $this->withHeaders($headers)->postJson('/webhooks/bigcommerce', $payload)->assertNoContent();
+
+        Queue::assertPushed(CaptureTamaraPayment::class, 1);
+    }
+
+    public function test_bigcommerce_order_updated_to_shipped_dispatches_capture(): void
+    {
+        Queue::fake();
+        Http::fake([
+            'https://api.bigcommerce.test/stores/abc123/v2/orders/127' => Http::response(['status_id' => 2]),
+        ]);
+        $payload = [
+            'scope' => 'store/order/updated',
+            'producer' => 'stores/abc123',
+            'hash' => 'bc-order-updated-shipped',
+            'data' => ['type' => 'order', 'id' => 127],
+        ];
+        $headers = [
+            'X-Tamara-Webhook-Token' => hash_hmac('sha256', 'abc123', (string) config('bigcommerce.client_secret')),
+        ];
+
+        $this->withHeaders($headers)->postJson('/webhooks/bigcommerce', $payload)->assertNoContent();
+
         Queue::assertPushed(CaptureTamaraPayment::class, 1);
     }
 
@@ -713,6 +802,161 @@ class PaymentBackendTest extends TestCase
 
         Http::assertSent(fn ($request) => str_contains($request->url(), '/payments/simplified-refund/')
             && ($request['total_amount']['amount'] ?? null) === 109.0);
+    }
+
+    public function test_bigcommerce_order_status_updated_to_cancelled_dispatches_cancel(): void
+    {
+        Queue::fake();
+        $payload = [
+            'scope' => 'store/order/statusUpdated',
+            'producer' => 'stores/abc123',
+            'hash' => 'bc-event-cancelled',
+            'data' => [
+                'type' => 'order',
+                'id' => 131,
+                'status' => ['previous_status_id' => 11, 'new_status_id' => 5],
+            ],
+        ];
+        $headers = [
+            'X-Tamara-Webhook-Token' => hash_hmac('sha256', 'abc123', (string) config('bigcommerce.client_secret')),
+        ];
+
+        $this->withHeaders($headers)->postJson('/webhooks/bigcommerce', $payload)->assertNoContent();
+
+        Queue::assertPushed(CancelTamaraOrder::class, 1);
+        Queue::assertNotPushed(CaptureTamaraPayment::class);
+        Queue::assertNotPushed(RefundTamaraPayment::class);
+    }
+
+    public function test_bigcommerce_order_updated_to_cancelled_dispatches_cancel(): void
+    {
+        Queue::fake();
+        Http::fake([
+            'https://api.bigcommerce.test/stores/abc123/v2/orders/132' => Http::response(['status_id' => 5]),
+        ]);
+        $payload = [
+            'scope' => 'store/order/updated',
+            'producer' => 'stores/abc123',
+            'hash' => 'bc-order-updated-cancelled',
+            'data' => ['type' => 'order', 'id' => 132],
+        ];
+        $headers = [
+            'X-Tamara-Webhook-Token' => hash_hmac('sha256', 'abc123', (string) config('bigcommerce.client_secret')),
+        ];
+
+        $this->withHeaders($headers)->postJson('/webhooks/bigcommerce', $payload)->assertNoContent();
+
+        Queue::assertPushed(CancelTamaraOrder::class, 1);
+    }
+
+    public function test_bigcommerce_order_cancelled_webhook_cancels_tamara_payment(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout131',
+            'bc_order_id' => '131', 'tamara_order_id' => 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'authorised', 'authorised_at' => now(),
+            'tamara_snapshot' => ['authorized_amount' => ['amount' => 109, 'currency' => 'SAR']],
+        ]);
+        Http::fake([
+            'https://api-sandbox.tamara.test/orders/*/cancel' => Http::response([
+                'order_id' => 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+                'status' => 'canceled',
+            ]),
+        ]);
+
+        $payload = [
+            'scope' => 'store/order/statusUpdated',
+            'producer' => 'stores/abc123',
+            'hash' => 'bc-event-cancelled-process',
+            'data' => [
+                'type' => 'order',
+                'id' => 131,
+                'status' => ['previous_status_id' => 11, 'new_status_id' => 5],
+            ],
+        ];
+        $headers = [
+            'X-Tamara-Webhook-Token' => hash_hmac('sha256', 'abc123', (string) config('bigcommerce.client_secret')),
+        ];
+
+        $this->withHeaders($headers)->postJson('/webhooks/bigcommerce', $payload)->assertNoContent();
+        $this->artisan('queue:work', ['--once' => true, '--stop-when-empty' => true]);
+
+        $session->refresh();
+        $this->assertSame('cancelled', $session->status->value);
+        $this->assertNotNull($session->cancelled_at);
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/orders/ffffffff-ffff-ffff-ffff-ffffffffffff/cancel')
+            && ($request['total_amount']['amount'] ?? null) === 109.0
+            && ($request['total_amount']['currency'] ?? null) === 'SAR');
+    }
+
+    public function test_cancel_job_ignores_non_authorised_payment(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout133',
+            'bc_order_id' => '133', 'tamara_order_id' => '12121212-1212-1212-1212-121212121212',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'captured', 'captured_at' => now(),
+        ]);
+        $event = WebhookEvent::query()->create([
+            'store_id' => $this->store->id,
+            'source' => WebhookSource::BigCommerce,
+            'external_id' => 'bc-event-cancel-captured',
+            'event_type' => 'store/order/statusUpdated',
+            'payload' => [
+                'scope' => 'store/order/statusUpdated',
+                'data' => ['type' => 'order', 'id' => 133, 'status' => ['new_status_id' => 5]],
+            ],
+            'received_at' => now(),
+        ]);
+        Http::fake();
+
+        (new CancelTamaraOrder($event->id))->handle(app(TamaraOrderService::class));
+
+        Http::assertNothingSent();
+        $this->assertDatabaseHas('webhook_events', [
+            'id' => $event->id,
+            'processing_status' => 'ignored',
+        ]);
+    }
+
+    public function test_cancel_job_waits_until_payment_is_authorised(): void
+    {
+        $this->store->tamaraConfig()->create([
+            'enabled' => true, 'mode' => 'sandbox', 'api_token' => 'merchant-secret-token',
+            'notification_token' => 'notification-secret-token-32-bytes',
+        ]);
+        $session = PaymentSession::query()->create([
+            'store_id' => $this->store->id, 'bc_checkout_id' => 'checkout134',
+            'bc_order_id' => '134', 'tamara_order_id' => '13131313-1313-1313-1313-131313131313',
+            'amount' => 109, 'currency' => 'SAR', 'status' => 'approved',
+        ]);
+        $event = WebhookEvent::query()->create([
+            'store_id' => $this->store->id,
+            'source' => WebhookSource::BigCommerce,
+            'external_id' => 'bc-event-cancel-approved',
+            'event_type' => 'store/order/statusUpdated',
+            'payload' => [
+                'scope' => 'store/order/statusUpdated',
+                'data' => ['type' => 'order', 'id' => 134, 'status' => ['new_status_id' => 5]],
+            ],
+            'received_at' => now(),
+        ]);
+        Http::fake();
+
+        (new CancelTamaraOrder($event->id))->handle(app(TamaraOrderService::class));
+
+        Http::assertNothingSent();
+        $event->refresh();
+        $this->assertNull($event->processed_at);
+        $session->refresh();
+        $this->assertSame('approved', $session->status->value);
     }
 
     public function test_tamara_order_refunded_webhook_sets_refunded_status(): void

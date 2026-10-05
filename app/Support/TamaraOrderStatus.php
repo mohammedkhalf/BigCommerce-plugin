@@ -22,6 +22,7 @@ final class TamaraOrderStatus
             $status === 'partially_refunded' => PaymentSessionStatus::PartiallyRefunded,
             in_array($status, ['authorised', 'authorized'], true) => PaymentSessionStatus::Authorised,
             $status === 'approved' => PaymentSessionStatus::Approved,
+            in_array($status, ['canceled', 'cancelled'], true) => PaymentSessionStatus::Cancelled,
             default => null,
         };
     }

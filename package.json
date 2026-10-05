@@ -3,7 +3,8 @@
     "type": "module",
     "scripts": {
         "build": "vite build && vite build --config vite.checkout.config.ts",
-        "dev": "vite"
+        "dev": "vite",
+        "dev:proxy": "node scripts/dev-tunnel-proxy.mjs"
     },
     "devDependencies": {
         "autoprefixer": "^10.4.20",

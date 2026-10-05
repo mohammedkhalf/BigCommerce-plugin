@@ -12,6 +12,7 @@ export default function PaymentStatusBadge({ status }: { status?: string }) {
         declined: 'danger',
         refunded: 'danger',
         pending: 'warning',
+        expired: 'warning',
         new: 'primary',
     } as const;
     const labels: Record<string, string> = {
@@ -21,6 +22,7 @@ export default function PaymentStatusBadge({ status }: { status?: string }) {
         pending: 'Pending',
         declined: 'Declined',
         cancelled: 'Cancelled',
+        expired: 'Expired',
         captured: 'Full captured',
         refunded: 'Refunded',
     };

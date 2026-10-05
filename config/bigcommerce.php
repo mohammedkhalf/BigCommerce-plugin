@@ -11,6 +11,7 @@ return [
     'shipped_status_id' => (int) env('BIGCOMMERCE_SHIPPED_STATUS_ID', 2),
     'refunded_status_id' => (int) env('BIGCOMMERCE_REFUNDED_STATUS_ID', 4),
     'partially_refunded_status_id' => (int) env('BIGCOMMERCE_PARTIALLY_REFUNDED_STATUS_ID', 14),
+    'cancelled_status_id' => (int) env('BIGCOMMERCE_CANCELLED_STATUS_ID', 5),
     'checkout_script_sri' => env('BIGCOMMERCE_CHECKOUT_SCRIPT_SRI'),
     'jwt_issuer' => env('BIGCOMMERCE_JWT_ISSUER', 'bc'),
     'app_jwt_secret' => env('APP_SESSION_JWT_SECRET', env('APP_KEY')),
