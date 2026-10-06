@@ -1,9 +1,9 @@
 # Architecture
 
-The Laravel application is the system of record for store installations, encrypted Tamara credentials, payment sessions, registered BigCommerce resources, and webhook idempotency.
+The Laravel application is the system of record for store installations, encrypted Tamara credentials, payment sessions, registered BigCommerce resources, webhook idempotency, and outbound Tamara HTTP logs for checkout, capture, refund, and cancel.
 
 OAuth installation queues `ProvisionStoreAfterInstall`, which synchronizes store metadata and idempotently registers the checkout script, shipment, order-status, and refund webhooks. The storefront script sends only a store hash and checkout ID. The backend reloads the checkout from BigCommerce, creates the BigCommerce order and token, then creates a Tamara checkout. Browser return URLs never determine payment state; Tamara is queried before confirmation redirect.
 
 Tamara and BigCommerce webhooks are persisted before queue dispatch. The unique provider/event identifier prevents duplicate work. Tamara `order_approved` authorises the payment with Tamara but does not automatically update the BigCommerce order paid status. BigCommerce `store/order/statusUpdated`, `store/order/updated` (when status becomes Shipped), and `store/shipment/created` dispatch capture jobs. BigCommerce `store/order/statusUpdated` (when status becomes Refunded) and `store/order/refund/created` dispatch refund jobs for captured payments. BigCommerce `store/order/statusUpdated` and `store/order/updated` (when status becomes Cancelled) dispatch cancel jobs for authorised payments; captured payments must be refunded instead.
 
-Run queue workers separately from the web process. Failed jobs remain retryable and webhook records retain bounded error details without credentials.
+Run queue workers separately from the web process. Failed jobs remain retryable and webhook records retain bounded error details without credentials. Outbound Tamara HTTP calls for checkout, capture, refund, and cancel are stored in `api_logs` with optional BigCommerce order ID, request payload, response payload, and timestamp. Authorise calls and inbound webhooks are not logged.

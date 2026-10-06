@@ -63,7 +63,7 @@ final class CancelTamaraOrder implements ShouldQueue
         try {
             $response = $orders->cancel($session->store, $session->tamara_order_id, [
                 'total_amount' => $this->cancelAmount($session),
-            ]);
+            ], $session->bc_order_id);
             $session->update([
                 'status' => PaymentSessionStatus::Cancelled,
                 'cancelled_at' => now(),

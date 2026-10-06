@@ -53,4 +53,9 @@ class Store extends Model
     {
         return $this->hasMany(WebhookEvent::class);
     }
+
+    public function apiLogs(): HasMany
+    {
+        return $this->hasMany(ApiLog::class);
+    }
 }

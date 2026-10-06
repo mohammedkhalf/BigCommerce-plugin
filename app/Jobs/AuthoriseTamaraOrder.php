@@ -31,7 +31,7 @@ final class AuthoriseTamaraOrder implements ShouldQueue
         $session = $event->paymentSession;
         try {
             if (! $session->authorised_at) {
-                $details = $orders->authorise($session->store, $session->tamara_order_id);
+                $details = $orders->authorise($session->store, $session->tamara_order_id, $session->bc_order_id);
                 $session->update([
                     'status' => PaymentSessionStatus::Authorised,
                     'authorised_at' => now(), 'tamara_snapshot' => $details,

@@ -2,6 +2,7 @@
 
 namespace App\Services\Tamara;
 
+use App\Enums\ApiLogAction;
 use App\Models\Store;
 
 final readonly class TamaraCheckoutService
@@ -10,6 +11,15 @@ final readonly class TamaraCheckoutService
 
     public function create(Store $store, array $payload): array
     {
-        return $this->client->request($store, 'POST', 'checkout', $payload);
+        $bcOrderId = $payload['order_reference_id'] ?? $payload['order_number'] ?? null;
+
+        return $this->client->request(
+            $store,
+            'POST',
+            'checkout',
+            $payload,
+            ApiLogAction::Checkout,
+            $bcOrderId !== null ? (string) $bcOrderId : null,
+        );
     }
 }

@@ -69,7 +69,7 @@ final class RefundTamaraPayment implements ShouldQueue
             $response = $orders->refund($session->store, $session->tamara_order_id, [
                 'total_amount' => $this->refundAmount($session, $event, $orders),
                 'comment' => 'BigCommerce refund for order '.$session->bc_order_id,
-            ]);
+            ], $session->bc_order_id);
             $status = TamaraOrderStatus::fromDetails($response) ?? PaymentSessionStatus::Refunded;
             $session->update([
                 'status' => $status === PaymentSessionStatus::PartiallyRefunded

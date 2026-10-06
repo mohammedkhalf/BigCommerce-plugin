@@ -70,7 +70,12 @@ final class CaptureTamaraPayment implements ShouldQueue
 
         try {
             if (! $session->captured_at) {
-                $response = $orders->capture($session->store, $session->tamara_order_id, $this->capturePayload($session, $event));
+                $response = $orders->capture(
+                    $session->store,
+                    $session->tamara_order_id,
+                    $this->capturePayload($session, $event),
+                    $session->bc_order_id,
+                );
                 $status = TamaraOrderStatus::fromDetails($response) ?? PaymentSessionStatus::Captured;
                 $session->update([
                     'status' => $status === PaymentSessionStatus::PartiallyCaptured
